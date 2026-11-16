@@ -8,7 +8,7 @@
 #ifndef LP_PROBE_GRID_HLSLI
 #define LP_PROBE_GRID_HLSLI
 
-struct ProbeData { float4 irr[9]; float m1[16]; float m2[16]; };   // irr.w livre
+struct ProbeData { float4 irr[9]; float m1[16]; float m2[16]; };   // irr[0].w = 1 se válido, 0 se inválido
 cbuffer ProbeGridCB : register(b8)
 {
     float3 probeOrigin; float probeSpacing;
@@ -48,6 +48,7 @@ float3 ProbeIrradiance(float3 pos, float3 n)
         int3 ci = c0 + o;
         uint idx = ci.x + probeDim.x * (ci.y + probeDim.y * ci.z);
         ProbeData p = g_Probes[idx];
+        if (p.irr[0].w < 0.5f) continue;
         float3 pp = probeOrigin + float3(ci) * probeSpacing;
         float tri = (o.x ? f.x : 1 - f.x) * (o.y ? f.y : 1 - f.y) * (o.z ? f.z : 1 - f.z);
         float3 toProbe = pp - pos; float dist = length(toProbe);

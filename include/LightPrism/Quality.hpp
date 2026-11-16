@@ -14,6 +14,9 @@ struct QualitySettings {
     uint32_t shadowMapResolution = 2048;
     uint32_t pcfTaps = 4;            // 1, 4 ou 9
     bool ssao = true;
+    bool hbao = false;               // se ativo, substitui SSAO no host
+    bool preferBakedStaticShadows = false;
+    bool preferBakedAmbientOcclusion = false;
     bool ssr = false;
     bool volumetrics = false;
     float volumetricResolutionScale = 0.25f;
@@ -35,18 +38,20 @@ inline QualitySettings MakeQualitySettings(QualityTier tier) {
     switch (tier) {
     case QualityTier::Mobile:
         q.csmCascades = 1; q.shadowMapResolution = 1024; q.pcfTaps = 1; q.ssao = false;
+        q.preferBakedStaticShadows = true; q.preferBakedAmbientOcclusion = true;
         q.interleavedShadowUpdates = true; q.maxLightsPerCluster = 16;
         q.packedIbl = true; q.shadowDepth16 = true; q.ssaoHalfRes = true; q.shL1 = true; q.iblCubeSize = 32;
         q.autoRadiusCutoff = 0.1f; q.indicesPerCluster = 4; break;
     case QualityTier::Low:
         q.csmCascades = 2; q.shadowMapResolution = 1024; q.pcfTaps = 4; q.ssao = false;
+        q.preferBakedStaticShadows = true; q.preferBakedAmbientOcclusion = true;
         q.interleavedShadowUpdates = true; q.maxLightsPerCluster = 32;
         q.packedIbl = true; q.shadowDepth16 = true; q.ssaoHalfRes = true; q.iblCubeSize = 32;
         q.autoRadiusCutoff = 0.05f; q.indicesPerCluster = 6; break;
     case QualityTier::Medium:
         q.packedIbl = true; q.ssaoHalfRes = true; q.autoRadiusCutoff = 0.02f; break;
     case QualityTier::High:
-        q.csmCascades = 4; q.shadowMapResolution = 4096; q.pcfTaps = 9; q.ssr = true;
+        q.csmCascades = 4; q.shadowMapResolution = 4096; q.pcfTaps = 9; q.ssao = false; q.hbao = true; q.ssr = true;
         q.volumetrics = true; q.maxLightsPerCluster = 128; q.iblCubeSize = 128; q.autoRadiusCutoff = 0.01f; break;
     }
     return q;

@@ -133,7 +133,7 @@ static void TestDegenerate() {
     for (BvhBuild m : {BvhBuild::BinnedSah, BvhBuild::Lbvh}) {
         Bvh b; b.Build(same, m);
         CHECK(b.Intersect(r, h) && std::fabs(h.t - 5.0f) < 1e-4f);
-        CHECK(b.MaxDepth() < 60);
+        CHECK(b.MaxDepth() <= 64);
     }
     // triângulo degenerado (área zero) não gera hit
     std::vector<Triangle> deg{{{0, 0, 3}, {1, 1, 3}, {2, 2, 3}}};

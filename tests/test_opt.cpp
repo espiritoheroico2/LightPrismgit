@@ -387,7 +387,9 @@ static void TestMemoryEstimate() {
         rig.Frame();
         const MemoryEstimate e = EstimateMemory(q);
         const uint64_t lightsPart = uint64_t(q.maxPointLights + q.maxSpotLights) * sizeof(ClusterLightGPU);
-        CHECK(e.clusters - lightsPart == rig.cs.AllocatedBytes());
+        const uint64_t maxLights = uint64_t(q.maxPointLights) + q.maxSpotLights;
+        const uint64_t sliceCandidates = uint64_t(q.zSlices) * 4 + uint64_t(q.zSlices) * maxLights * 4;
+        CHECK(e.clusters - lightsPart - sliceCandidates == rig.cs.AllocatedBytes());
     }
     // IBL: bate com os vetores reais.
     {
@@ -408,6 +410,10 @@ static void TestMemoryEstimate() {
         CHECK(e.Total() < prev);
         prev = e.Total();
     }
+    MemoryQuery hbaoQuery;
+    hbaoQuery.quality = MakeQualitySettings(QualityTier::High);
+    CHECK(hbaoQuery.quality.hbao && !hbaoQuery.quality.ssao);
+    CHECK(EstimateMemory(hbaoQuery).ssao == uint64_t(hbaoQuery.width) * hbaoQuery.height * 2);
     MemoryQuery base; base.quality = MakeQualitySettings(QualityTier::Medium);
     base.quality.packedIbl = false; base.quality.ssaoHalfRes = false; base.quality.indicesPerCluster = 8; base.quality.shadowDepth16 = false;
     MemoryQuery opt; opt.quality = MakeQualitySettings(QualityTier::Medium); opt.quality.shadowDepth16 = true;

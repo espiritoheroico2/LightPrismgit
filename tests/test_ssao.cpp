@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <string>
 
+#include "LightPrism/Post/Ssao.hpp"
 #include "LightPrism/Soft/DemoScene.hpp"
 #include "LightPrism/Soft/Png.hpp"
 
@@ -173,11 +174,55 @@ static void TestKernelAndLayout() {
     for (bool s : seen) CHECK(s);
 }
 
+static void TestHbao() {
+    float depth[9];
+    Vec3 normal[9];
+    for (int i = 0; i < 9; ++i) {
+        depth[i] = 1.0f;
+        normal[i] = {0, 0, 1};
+    }
+
+    Ssao::HbaoConfig cfg;
+    cfg.radius = 1.2f;
+    cfg.bias = 0.01f;
+    cfg.steps = 1;
+    cfg.maxScreenRadius = 1.0f;
+    cfg.fadeStart = 100.0f;
+    cfg.fadeEnd = 200.0f;
+    Ssao::HbaoInput input;
+    input.width = 3; input.height = 3;
+    input.viewDepth = depth; input.viewNormal = normal;
+
+    std::vector<float> ao;
+    Ssao::ComputeHbaoRaw(cfg, input, ao);
+    CHECK(std::fabs(ao[4] - 1.0f) < 1e-5f);  // superfície plana sem oclusores
+
+    for (int i = 0; i < 9; ++i)
+        if (i != 4) depth[i] = 0.5f;
+    Ssao::ComputeHbaoRaw(cfg, input, ao);
+    CHECK(ao[4] < 0.95f);                    // vizinhos elevados reduzem o AO
+    for (float value : ao) CHECK(std::isfinite(value) && value >= 0.0f && value <= 1.0f);
+
+    const Mat4 projection = PerspectiveRH_ReverseZ(1.0f, 1.0f, 0.1f, 100.0f);
+    cfg.directions = 0; cfg.steps = 100;
+    const Ssao::HbaoGPU gpu = Ssao::MakeHbaoGPU(cfg, 3, 3, projection.m);
+    CHECK(sizeof(gpu) == 64);
+    CHECK(gpu.width == 3 && gpu.height == 3);
+    CHECK(gpu.directions == 1 && gpu.steps == 16);
+    CHECK(gpu.proj22 == projection.m[2][2] && gpu.proj23 == projection.m[2][3]);
+    CHECK(offsetof(Ssao::HbaoGPU, proj22) == 8);
+    CHECK(offsetof(Ssao::HbaoGPU, width) == 16);
+    CHECK(offsetof(Ssao::HbaoGPU, radius) == 24);
+    CHECK(offsetof(Ssao::HbaoGPU, directions) == 32);
+    CHECK(offsetof(Ssao::HbaoGPU, fadeStart) == 48);
+}
+
 int main() {
     TestFlatFloor();
     TestAgainstRayTracedAO();
     TestRadiusMonotonic();
     TestKernelAndLayout();
+    TestHbao();
     if (g_failures == 0) std::printf("Testes de SSAO: todos passaram.\n");
     else std::printf("Testes de SSAO: %d falha(s).\n", g_failures);
     return g_failures == 0 ? 0 : 1;

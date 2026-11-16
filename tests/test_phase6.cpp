@@ -553,6 +553,15 @@ double RelLum(const Vec3& a, const Vec3& b) { return std::fabs(Lum(a) - Lum(b)) 
 
 static void TestProbeGrid() {
     using namespace Rt;
+    {
+        ProbeGrid invalid;
+        ProbeGridDesc bad;
+        bad.nx = 1;
+        CHECK(!invalid.Init(bad));
+        CHECK(invalid.Count() == 0);
+        CHECK(invalid.Update(Bvh{}, ProbeEnvironment{}) == 0);
+        CHECK(Length(invalid.Irradiance({0, 0, 0}, {0, 1, 0})) == 0.0f);
+    }
     Scene scene = MakeDemoScene();
     scene.planes.pop_back();                                      // ao ar livre: só chão e esferas
     const std::vector<Triangle> tris = TessellateScene(scene);
@@ -570,7 +579,10 @@ static void TestProbeGrid() {
     env.multiBounce = false;                                       // a verdade acima também é de 1 rebatimento
 
     ProbeGridDesc gd; gd.origin = {-12.0f, 0.5f, -26.0f}; gd.spacing = 2.0f; gd.nx = 13; gd.ny = 4; gd.nz = 14; gd.raysPerProbe = 64; gd.maxDistance = 80.0f; gd.invalidateRadius = 10.0f;
-    ProbeGrid grid; grid.Init(gd);
+    ProbeGrid grid; CHECK(grid.Init(gd));
+    CHECK(grid.Count() == 13u * 4 * 14);
+    ProbeGridDesc invalidDesc = gd; invalidDesc.nz = 1;
+    CHECK(!grid.Init(invalidDesc));
     CHECK(grid.Count() == 13u * 4 * 14);
 
     // (A) convergência com histerese: muitos quadros de 64 raios aproximam a verdade (nos próprios probes, espaço livre)
@@ -606,7 +618,7 @@ static void TestProbeGrid() {
 
     // (C) orçamento: 4 fatias de 1/4 == 1 ciclo completo; custo por quadro = 1/4
     {
-        ProbeGrid g2; g2.Init(gd);
+        ProbeGrid g2; CHECK(g2.Init(gd));
         const uint64_t r0 = g2.Stats().raysCast;
         uint32_t total = 0; for (int i = 0; i < 4; ++i) total += g2.Update(bvh, env, (g2.Count() + 3) / 4);
         CHECK(total >= g2.Count() && g2.InvalidCount() == 0);
@@ -622,7 +634,7 @@ static void TestProbeGrid() {
         we.sky = [](const Vec3&) { return Vec3{0, 0, 0}; };         // sem céu: só o sol iluminando a face +x
         we.sunToLight = Normalize(Vec3{1.0f, 0.3f, 0.0f}); we.sunIrradiance = {10, 10, 10};
         ProbeGridDesc wd; wd.origin = {-0.5f, 2.0f, -2.0f}; wd.spacing = 1.0f; wd.nx = 2; wd.ny = 3; wd.nz = 5; wd.raysPerProbe = 128; wd.maxDistance = 60.0f;
-        ProbeGrid wg; wg.Init(wd);
+        ProbeGrid wg; CHECK(wg.Init(wd));
         for (int f = 0; f < 30; ++f) wg.Update(wb, we);
         const Vec3 p{-0.15f, 3.0f, 0.0f}, up{0, 1, 0};              // lado escuro, perto da parede
         const Vec3 tr = TruthIrradiance(wb, we, p, up, 60.0f);
@@ -668,7 +680,7 @@ static void TestProbeGrid() {
         SoftRenderer renderer(scene, cam);
         const GBufferView gb = renderer.ExportGBuffer();
         ProbeEnvironment mb = env; mb.multiBounce = true;
-        ProbeGrid g3; g3.Init(gd);
+        ProbeGrid g3; CHECK(g3.Init(gd));
         for (int f = 0; f < 40; ++f) g3.Update(bvh, mb);
         std::vector<Vec3> imgP(W * H), imgT(W * H), imgD(W * H);
         double e = 0; size_t n = 0;

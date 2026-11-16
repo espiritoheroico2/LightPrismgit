@@ -14,8 +14,9 @@ sem arrays locais, sem buffer de AABBs (o AABB do cluster é calculado na hora).
 | `ClusterCounts` (uint) | 0,75 MiB |
 | `LightGrid` (`ClusterCell`, 8 B) | 1,5 MiB |
 | `LightIndexList` (8 índices/cluster, ajustável por `maxIndices`) | 6 MiB |
+| Candidatos por fatia (`gridZ × max(1, luzes)`, uint) | depende da cena; ~0,5 MiB para 24 fatias e 5.120 luzes |
 | `GroupSums` + `Stats` | ~3 KiB |
-| **Total** | **~8 MiB** |
+| **Total** | **~8 MiB + candidatos por fatia** |
 
 Em telas maiores que ~1440p, use `SuggestClusterTileSize()` (tile 32 mantém ~200 mil clusters em 4K).
 
@@ -24,17 +25,21 @@ Em telas maiores que ~1440p, use `SuggestClusterTileSize()` (tile 32 mantém ~20
 | # | Shader (entry) | Dispatch | Lê | Escreve |
 |---|---|---|---|---|
 | 1 | `ClusterLightPrep.compute.hlsl` (CSMain) | ⌈(np+ns)/64⌉ | luzes, view | `ClusterLight[]` |
-| 2 | `ClusterCullCount.compute.hlsl` (CSMain) | ⌈clusters/64⌉ | `ClusterLight[]` | `ClusterCounts` |
-| 3 | `ClusterScan.compute.hlsl` (ScanLocal) | ⌈clusters/256⌉ | `ClusterCounts` | `ClusterCounts` (offset local), `GroupSums` |
-| 4 | `ClusterScan.compute.hlsl` (ScanGroupSums) | 1 | `GroupSums` | `GroupSums` (offset do grupo), `Stats[0]` |
-| 5 | `ClusterCullFill.compute.hlsl` (CSMain) | ⌈clusters/64⌉ | tudo acima | `LightIndexList`, `LightGrid` |
+| 2 | `ClusterLightBin.compute.hlsl` (CSMain) | `gridZ` | `ClusterLight[]` | candidatos ordenados por fatia |
+| 3 | `ClusterCullCount.compute.hlsl` (CSMain) | ⌈clusters/64⌉ | candidatos da fatia, `ClusterLight[]` | `ClusterCounts` |
+| 4 | `ClusterScan.compute.hlsl` (ScanLocal) | ⌈clusters/256⌉ | `ClusterCounts` | `ClusterCounts` (offset local), `GroupSums` |
+| 5 | `ClusterScan.compute.hlsl` (ScanGroupSums) | 1 | `GroupSums` | `GroupSums` (offset do grupo), `Stats[0]` |
+| 6 | `ClusterCullFill.compute.hlsl` (CSMain) | ⌈clusters/64⌉ | tudo acima | `LightIndexList`, `LightGrid` |
 
-Barreira UAV entre cada passo. O `ClusterGridGPU` (cbuffer b0) é o mesmo em todos; `numPointLights` /
+Barreiras UAV entre escritas dependentes (10 no total). O binning percorre a lista uma vez por fatia e
+mantém a ordem original; count/fill testam apenas as luzes que abrangem a profundidade do cluster.
+Isso reduz o trabalho típico de clusters × todas as luzes para clusters × candidatos da fatia; luzes que
+cobrem todo o frustum continuam candidatas em todas as fatias. O `ClusterGridGPU` (cbuffer b0) é o mesmo em todos; `numPointLights` /
 `numSpotLights` vêm de `FrameLightView`.
 
 ## Prioridade e estouro
 
-- `BuildFrame` ordena as luzes por prioridade decrescente; os passes 2 e 5 percorrem na mesma ordem e
+- `BuildFrame` ordena as luzes por prioridade decrescente; os passes 3 e 6 percorrem na mesma ordem e
   param ao atingir `maxLightsPerCluster`. Ficam as mais importantes. Pontos vêm antes de spots.
 - Se a soma ultrapassar `maxIndices`, os clusters do fim perdem luzes (escrita descartada, nunca
   fora do buffer). Leia `Stats[0]` (de forma assíncrona) e compare com `maxIndices` para detectar.
@@ -66,8 +71,8 @@ Os `.hlsl` espelham o C++ linha a linha. Mudou um, mude o outro.
 ## ClusterSystem (orquestração)
 
 `ClusterSystem::Execute(device, lights, frame, camera)` faz tudo da tabela acima: recria buffers quando a tela
-ou o orçamento mudam, liga os recursos pelo nome (`ClusterGridCB`, `Lights`, `ClusterCounts`, ...), dispara os 5
-dispatches com barreiras UAV (8 no total) e copia `Stats` para um buffer de readback.
+ou o orçamento mudam, liga os recursos pelo nome (`ClusterGridCB`, `Lights`, `SliceLightIndices`, ...), dispara os 6
+dispatches com barreiras UAV (10 no total) e copia `Stats` para um buffer de readback.
 
 - **Modo:** `Auto` usa GPU e cai no CPU se o dispositivo não tiver compute ou algum shader falhar ao compilar
   (`FallbackReason()` diz por quê). `Gpu` / `Cpu` forçam o modo. No CPU os mesmos buffers são preenchidos pela
@@ -76,8 +81,8 @@ dispatches com barreiras UAV (8 no total) e copia `Stats` para um buffer de read
   precisa ter terminado a cópia); antes disso retorna `false`.
 - **Nomes de binding:** o compilador de shader remove recursos não usados num entry point (ex.: `Stats` no
   `ScanLocal`). O RHI ignora esses nomes em vez de falhar; um teste confere todos os nomes contra os `.hlsl`.
-- **Limite de dispatch 1D:** `clusters/64` precisa caber em `maxComputeGroupsPerDim` (65535 → ~4,19 milhões de
-  clusters). Acima disso `Execute` falha com mensagem; aumente `tileSizePx` ou reduza `zSlices`.
+- **Limite de dispatch:** `clusters/64`, `clusters/256` e `gridZ` precisam caber em `maxComputeGroupsPerDim`
+  (65535 → ~4,19 milhões de clusters). Acima disso `Execute` falha com mensagem; aumente `tileSizePx` ou reduza `zSlices`.
 
 ## Renderizador por software (`lp_softrender`)
 

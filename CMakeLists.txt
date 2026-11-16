@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
 project(LightPrism VERSION 0.1.0 LANGUAGES CXX)
 
+find_package(Threads REQUIRED)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -8,6 +10,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(LP_BUILD_TESTS      "Compila os testes (golden tests CPU)" ON)
 option(LP_BUILD_SOFT       "Compila o renderizador por software e a ferramenta lp_softrender" ON)
 option(LP_ENABLE_DILIGENT  "Compila o backend Diligent (requer DiligentCore)" OFF)
+option(LP_BUILD_SHADER_TRANSLATIONS "Gera SPIR-V e GLSL a partir dos shaders HLSL (requer dxc e spirv-cross)" OFF)
 
 # ---------------------------------------------------------------------------
 # Núcleo: independente de engine e de API gráfica.
@@ -21,10 +24,15 @@ add_library(LightPrism STATIC
     src/Post/Ssao.cpp
     src/Rt/Bvh.cpp
     src/Rt/Transfer.cpp
+    src/Rt/SurfaceBake.cpp
+    src/Rt/Memoryartner.cpp
+    src/Rt/HybridReflection.cpp
+    src/Debug/Visualize.cpp
     src/Rt/ProbeGrid.cpp
     src/Rhi/NullDevice.cpp
 )
 add_library(LightPrism::LightPrism ALIAS LightPrism)
+target_link_libraries(LightPrism PRIVATE Threads::Threads)
 
 target_include_directories(LightPrism PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
@@ -68,4 +76,8 @@ endif()
 if(LP_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
+endif()
+
+if(LP_BUILD_SHADER_TRANSLATIONS)
+    include(cmake/ShaderCrossCompile.cmake)
 endif()

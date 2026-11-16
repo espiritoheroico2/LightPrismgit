@@ -32,7 +32,9 @@ public:
     const BufferDesc& Desc() const override { return m_desc; }
 
     bool Update(const void* data, uint64_t size, uint64_t offset) override {
-        if (!m_buffer || m_desc.kind == BufferKind::Readback || offset + size > m_desc.sizeBytes) return false;
+        if (!m_buffer || m_desc.kind == BufferKind::Readback || offset > m_desc.sizeBytes ||
+            size > m_desc.sizeBytes - offset || (size > 0 && !data))
+            return false;
         if (size == 0) return true;
         m_context->UpdateBuffer(m_buffer.RawPtr(), offset, size, data, DG::RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
         return true;
@@ -40,7 +42,9 @@ public:
 
     // Não bloqueia: se a GPU ainda não terminou a cópia, retorna false e o chamador tenta no frame seguinte.
     bool ReadBack(void* dst, uint64_t size, uint64_t offset) override {
-        if (!m_buffer || m_desc.kind != BufferKind::Readback || offset + size > m_desc.sizeBytes) return false;
+        if (!m_buffer || m_desc.kind != BufferKind::Readback || offset > m_desc.sizeBytes ||
+            size > m_desc.sizeBytes - offset || (size > 0 && !dst))
+            return false;
         if (size == 0) return true;
         DG::PVoid mapped = nullptr;
         m_context->MapBuffer(m_buffer.RawPtr(), DG::MAP_READ, DG::MAP_FLAG_DO_NOT_WAIT, mapped);

@@ -39,9 +39,10 @@ float3 BvhInvDir(float3 d)
     return float3(d.x != 0.0f ? 1.0f / d.x : 1e30f, d.y != 0.0f ? 1.0f / d.y : 1e30f, d.z != 0.0f ? 1.0f / d.z : 1e30f);
 }
 
-// Möller–Trumbore dos dois lados. Devolve t em [tMin, tMax] ou -1.
-float BvhTriangle(uint tri, RtRay r, float tMax)
+// Möller–Trumbore dos dois lados. Devolve t e coordenadas baricêntricas ou -1.
+float BvhTriangleHit(uint tri, RtRay r, float tMax, out float2 bary)
 {
+    bary = 0.0f;
     float3 v0 = g_BvhVerts[tri * 3 + 0], v1 = g_BvhVerts[tri * 3 + 1], v2 = g_BvhVerts[tri * 3 + 2];
     float3 e1 = v1 - v0, e2 = v2 - v0;
     float3 p = cross(r.dir, e2);
@@ -55,12 +56,26 @@ float BvhTriangle(uint tri, RtRay r, float tMax)
     float v = dot(r.dir, q) * inv;
     if (v < -1e-6f || u + v > 1.0f + 1e-6f) return -1.0f;
     float t = dot(e2, q) * inv;
-    return (t < r.tMin || t > tMax) ? -1.0f : t;
+    if (t < r.tMin || t > tMax) return -1.0f;
+    bary = float2(u, v);
+    return t;
 }
 
-// Interseção mais próxima dentro de [tMin, tMax] (tMax = LIMITE DE DISTÂNCIA: poda subárvores). Devolve t ou -1.
-float BvhIntersect(RtRay r)
+float BvhTriangle(uint tri, RtRay r, float tMax)
 {
+    float2 bary;
+    return BvhTriangleHit(tri, r, tMax, bary);
+}
+
+// Interseção mais próxima; `hitTri` é ordem das folhas (use LeafOrderIndices no host).
+float BvhIntersectHit(RtRay r, out uint hitTri, out float2 hitBary)
+{
+    hitTri = 0;
+    hitBary = 0.0f;
+    uint nodeCount, nodeStride;
+    g_BvhNodes.GetDimensions(nodeCount, nodeStride);
+    if (nodeCount == 0) return -1.0f;
+
     float3 inv = BvhInvDir(r.dir);
     float tMax = r.tMax;
     float best = -1.0f;
@@ -75,8 +90,9 @@ float BvhIntersect(RtRay r)
         {
             for (uint i = 0; i < n.count; ++i)
             {
-                float t = BvhTriangle(n.leftOrFirst + i, r, tMax);
-                if (t >= 0.0f) { tMax = t; best = t; }
+                float2 bary;
+                float t = BvhTriangleHit(n.leftOrFirst + i, r, tMax, bary);
+                if (t >= 0.0f) { tMax = t; best = t; hitTri = n.leftOrFirst + i; hitBary = bary; }
             }
         }
         else
@@ -87,6 +103,7 @@ float BvhIntersect(RtRay r)
             bool ha = ta <= tMax, hb = tb <= tMax;
             if (ha && hb)
             {
+                if (sp >= LP_BVH_STACK) return best;
                 bool aFirst = ta <= tb;
                 stack[sp] = aFirst ? c1 : c0; stackT[sp] = aFirst ? tb : ta; ++sp;
                 cur = aFirst ? c0 : c1; popNext = false;
@@ -103,9 +120,21 @@ float BvhIntersect(RtRay r)
     return best;
 }
 
+// Compatibilidade para efeitos que precisam apenas da distância.
+float BvhIntersect(RtRay r)
+{
+    uint hitTri;
+    float2 hitBary;
+    return BvhIntersectHit(r, hitTri, hitBary);
+}
+
 // Qualquer interseção em [tMin, tMax] (sombras/AO binário): sai no primeiro acerto.
 bool BvhOccluded(RtRay r)
 {
+    uint nodeCount, nodeStride;
+    g_BvhNodes.GetDimensions(nodeCount, nodeStride);
+    if (nodeCount == 0) return false;
+
     float3 inv = BvhInvDir(r.dir);
     uint stack[LP_BVH_STACK]; uint sp = 0;
     if (BvhSlabNear(g_BvhNodes[0], r.origin, inv, r.tMin, r.tMax) > r.tMax) return false;
@@ -127,6 +156,7 @@ bool BvhOccluded(RtRay r)
             bool ha = ta <= r.tMax, hb = tb <= r.tMax;
             if (ha && hb)
             {
+                if (sp >= LP_BVH_STACK) return false;
                 bool aFirst = ta <= tb;
                 stack[sp++] = aFirst ? c1 : c0;
                 cur = aFirst ? c0 : c1; popNext = false;

@@ -58,6 +58,25 @@ inline void ComputeSsao(const SsaoConfig& cfg, const SsaoInput& in, std::vector<
     BilateralBlur(cfg, in, raw, out);
 }
 
+// Horizon-based AO: samples a small number of screen-space directions and keeps the strongest
+// visible horizon in each direction. Higher quality costs directions * steps depth reads per pixel.
+struct HbaoConfig {
+    uint32_t directions = 8;
+    uint32_t steps = 4;
+    float radius = 0.8f;
+    float bias = 0.02f;
+    float power = 1.4f;
+    float blurDepthRel = 0.05f;
+    float fadeStart = 20.0f;
+    float fadeEnd = 40.0f;
+    float maxScreenRadius = 64.0f;
+};
+
+using HbaoInput = SsaoInput;
+
+void ComputeHbaoRaw(const HbaoConfig& cfg, const HbaoInput& in, std::vector<float>& out);
+void ComputeHbao(const HbaoConfig& cfg, const HbaoInput& in, std::vector<float>& out);
+
 // Posição de view do pixel (x,y) com profundidade d.
 Vec3 ViewPosFromDepth(const SsaoInput& in, uint32_t x, uint32_t y, float d);
 
@@ -74,5 +93,17 @@ struct alignas(16) SsaoGPU {
 static_assert(sizeof(SsaoGPU) == 576, "SsaoGPU deve espelhar SSAOData do HLSL");
 
 SsaoGPU MakeSsaoGPU(const SsaoConfig& cfg, uint32_t width, uint32_t height, const float proj[4][4]);
+
+struct alignas(16) HbaoGPU {
+    float proj00, proj11, proj22, proj23;
+    uint32_t width, height;
+    float radius, bias;
+    uint32_t directions, steps;
+    float power, blurDepthRel;
+    float fadeStart, fadeEnd, maxScreenRadius, pad;
+};
+static_assert(sizeof(HbaoGPU) == 64, "HbaoGPU deve espelhar HbaoData no HLSL");
+
+HbaoGPU MakeHbaoGPU(const HbaoConfig& cfg, uint32_t width, uint32_t height, const float proj[4][4]);
 
 } // namespace LightPrism::Ssao

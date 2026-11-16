@@ -47,3 +47,18 @@ final for `*_SRGB`, use só `ACESFilm3()` e deixe o hardware converter.
   `E(n)/π = Σ sh[i]·poli_i(n)`. Difuso indireto = `kD · albedo · E/π · intensity · ao`.
 - Cubemap: ordem e orientação D3D; mip i = rugosidade perceptual i/(mips−1). LUT: x = N·V, y = rugosidade, texel centrado.
 - SSAO: profundidade linear de view (positiva) e normais em view space; raio, bias em metros; AO 1 = livre.
+- HBAO: mesma entrada/saída de SSAO. `HbaoConfig` controla direções, passos, raio, bias, limite de raio em pixels e fade; mais direções/passos aumentam o custo multiplicativamente. Use `ComputeHbao` na referência CPU ou `HbaoMain` + `HbaoBlur` no host gráfico.
+- Presets Mobile/Low preferem AO e sombras estáticas baked quando a engine hospedeira tiver os dados; a biblioteca não possui passe de renderização de lightmaps e deve manter o efeito dinâmico como fallback.
+
+## Tradução dos shaders
+
+HLSL permanece como fonte única e o backend Diligent continua compilando HLSL em runtime. A tradução opcional gera artefatos
+SPIR-V e GLSL 450 para inspeção/integração da engine hospedeira; ela não altera automaticamente o backend:
+
+```text
+cmake -S . -B build -DLP_BUILD_SHADER_TRANSLATIONS=ON
+cmake --build build --target LightPrismTranslateShaders
+```
+
+Esse alvo exige `dxc` e `spirv-cross` no `PATH` e grava os arquivos em `build/shader-translations`. A configuração informa erro se
+as ferramentas não forem encontradas. GLSL gerado não é mantido como uma segunda fonte editável.

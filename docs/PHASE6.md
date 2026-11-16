@@ -41,6 +41,8 @@ produzir a metade escura da penumbra; sem isso a penumbra ficava toda do lado il
 Froxels com profundidade exponencial (como os slices dos clusters). Para cada coluna, de perto para longe:
 `S = σs·Σ fase·radiância·visibilidade`, `L += T·(S − S·e^{−σt Δt})/σt`, `T *= e^{−σt Δt}` — a integral é **analítica por froxel**, então é exata para S e σt constantes.
 O pixel faz uma leitura trilinear: `cor = cor·T + L`. Fase de Henyey–Greenstein (normalização testada, 4 valores de g).
+A versão HLSL usa a mesma convenção de transformação de vetores `mul(matriz, vetor)` da CPU e soma
+luzes pontuais locais com a mesma atenuação por distância; os dados locais devem ser empacotados em `FogPointLight`.
 - Meio homogêneo vs solução analítica: erro **7,5e-6** (12 slices).
 - Cena com as sombras das esferas vs marcha fina de 256 passos/pixel: 16 slices **2,7 %**, 32 slices **1,2 %**, 64 slices 1,1 % de erro na luz espalhada; 900 KiB; 115 200 raios de visibilidade em ~7 ms (CPU).
 - Sombras das esferas aparecem no volume (luz espalhada com oclusão = 92 % da sem oclusão).
@@ -51,7 +53,9 @@ O pixel faz uma leitura trilinear: `cor = cor·T + L`. Fase de Henyey–Greenste
 
 ## 4. Probes de GI (DDGI simplificado)
 Grade regular; cada probe lança `raysPerProbe` raios (Fibonacci com rotação aleatória por quadro), acerta o BVH ou o céu, sombreia o ponto de acerto (sol + indireto da própria grade = multi-bounce) e guarda a **irradiância SH9 convoluída**. Mistura com histerese; `Update(budget)` em round-robin.
-Recepção: 8 probes × peso trilinear × face × **visibilidade** (momentos de distância num mapa octaédrico 4×4 com pesos cos³², Chebyshev).
+Recepção: 8 probes válidos × peso trilinear × face × **visibilidade** (momentos de distância num mapa octaédrico 4×4 com pesos cos³², Chebyshev).
+`ProbeGrid::Init` rejeita dimensões menores que 2, contagens que não cabem em 32 bits e parâmetros não finitos/inválidos;
+na consulta HLSL, `irr[0].w` indica se o probe foi inicializado.
 - Probes em espaço livre vs verdade (4096 raios): erro **2,5 % (1 quadro) → 1,3 % (8) → 0,6 % (64)** com 64 raios/probe/quadro.
 - Entre probes (2 m): 0,8 % com visibilidade, 1,5 % só trilinear.
 - **Vazamento por parede fina:** 0,418 (só trilinear) → **0,0005** com visibilidade (verdade 0). Dois achados do teste: 8 octantes eram grossos demais; e o lóbulo cos⁸ borrava a distância (margem de 10 cm) — com cos³² o vazamento some (um deslocamento extra da média em ½σ foi testado e **não** era necessário; removido).

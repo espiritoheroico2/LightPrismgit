@@ -1,4 +1,4 @@
-// Passe 3: prefix sum exclusivo hierárquico sobre ClusterCounts.
+// Passe 4/5: prefix sum exclusivo hierárquico sobre ClusterCounts.
 //   ScanLocal     : 1 thread por cluster; scan exclusivo por grupo de 256, grava a soma do grupo.
 //   ScanGroupSums : 1 grupo de 1024 threads; scan exclusivo das somas dos grupos (K somas por thread),
 //                   grava o total em Stats[0] (= índices pedidos; compare com maxIndices para detectar overflow).
