@@ -44,6 +44,9 @@ struct ClusterSystem::Impl {
     const IGraphicsDevice* boundDevice = nullptr;
     std::unique_ptr<IComputePipeline> pPrep, pBin, pCount, pScanLocal, pScanSums, pFill;
     bool pipelinesTried = false;
+    bool bindingsDirty = true;          // algum buffer mudou: refaz os bindings dos pipelines
+    IGpuBuffer* lastPointBuf = nullptr; // bindings atuais (evita SetBuffer a cada quadro)
+    IGpuBuffer* lastSpotBuf = nullptr;
     ClusterMode active = ClusterMode::Cpu;
     std::string lastError, fallbackReason;
 
@@ -66,6 +69,8 @@ struct ClusterSystem::Impl {
         stats.reset(); lightIndex.reset(); lightGrid.reset(); readback.reset();
         clusterLightsCap = 0; sliceLightIndicesCap = 0; allocSlices = 0; allocClusters = 0; allocMaxIndices = 0;
         pipelinesTried = false;
+        bindingsDirty = true;
+        lastPointBuf = nullptr; lastSpotBuf = nullptr;
         boundDevice = dev;
     }
 
@@ -107,6 +112,7 @@ struct ClusterSystem::Impl {
             stats = Make(dev, BufferKind::StructuredRW, 1, 4, "LP_ClusterStats");
             readback = Make(dev, BufferKind::Readback, 1, 4, "LP_ClusterStatsReadback");
             if (!gridCB || !viewCB || !stats || !readback) return false;
+            bindingsDirty = true;
         }
         if (allocClusters != clusters || allocMaxIndices != grid.maxIndices || !counts) {
             const uint32_t groups = DivUp(clusters, kClusterScanGroupSize);
@@ -117,6 +123,7 @@ struct ClusterSystem::Impl {
             if (!counts || !groupSums || !lightGrid || !lightIndex) return false;
             allocClusters = clusters;
             allocMaxIndices = grid.maxIndices;
+            bindingsDirty = true;
         }
         if (gpuRequired) {
             const uint64_t need = std::max<uint64_t>(lightCount, 1);
@@ -125,11 +132,13 @@ struct ClusterSystem::Impl {
                 clusterLights = Make(dev, BufferKind::StructuredRW, cap, sizeof(ClusterLightGPU), "LP_ClusterLights");
                 if (!clusterLights) return false;
                 clusterLightsCap = cap;
+                bindingsDirty = true;
             }
             if (!sliceLightCounts || allocSlices != grid.gridZ) {
                 sliceLightCounts = Make(dev, BufferKind::StructuredRW, grid.gridZ, 4, "LP_ClusterSliceLightCounts");
                 if (!sliceLightCounts) return false;
                 allocSlices = grid.gridZ;
+                bindingsDirty = true;
             }
             const uint64_t sliceIndexNeed = uint64_t(grid.gridZ) * need;
             if (sliceIndexNeed > std::numeric_limits<uint32_t>::max()) return false;
@@ -137,6 +146,7 @@ struct ClusterSystem::Impl {
                 sliceLightIndices = Make(dev, BufferKind::StructuredRW, sliceIndexNeed, 4, "LP_ClusterSliceLightIndices");
                 if (!sliceLightIndices) return false;
                 sliceLightIndicesCap = sliceIndexNeed;
+                bindingsDirty = true;
             }
         }
         return true;
@@ -208,6 +218,51 @@ struct ClusterSystem::Impl {
         return true;
     }
 
+    // Liga todos os buffers aos pipelines. So refaz quando algum buffer mudou (ou a luz de entrada mudou).
+    bool BindAllPipelines(IGpuBuffer* pointBuf, IGpuBuffer* spotBuf) {
+        if (!bindingsDirty && pointBuf == lastPointBuf && spotBuf == lastSpotBuf) return true;
+        if (!Bind(*pPrep, "ClusterGridCB", gridCB.get(), BindUsage::Constant) ||
+            !Bind(*pPrep, "ViewCB", viewCB.get(), BindUsage::Constant) ||
+            !Bind(*pPrep, "InPointLights", pointBuf, BindUsage::ReadOnly) ||
+            !Bind(*pPrep, "InSpotLights", spotBuf, BindUsage::ReadOnly) ||
+            !Bind(*pPrep, "OutClusterLights", clusterLights.get(), BindUsage::ReadWrite))
+            return false;
+        if (!Bind(*pBin, "ClusterGridCB", gridCB.get(), BindUsage::Constant) ||
+            !Bind(*pBin, "Lights", clusterLights.get(), BindUsage::ReadOnly) ||
+            !Bind(*pBin, "SliceLightCounts", sliceLightCounts.get(), BindUsage::ReadWrite) ||
+            !Bind(*pBin, "SliceLightIndices", sliceLightIndices.get(), BindUsage::ReadWrite))
+            return false;
+        if (!Bind(*pCount, "ClusterGridCB", gridCB.get(), BindUsage::Constant) ||
+            !Bind(*pCount, "SliceLightCounts", sliceLightCounts.get(), BindUsage::ReadOnly) ||
+            !Bind(*pCount, "SliceLightIndices", sliceLightIndices.get(), BindUsage::ReadOnly) ||
+            !Bind(*pCount, "Lights", clusterLights.get(), BindUsage::ReadOnly) ||
+            !Bind(*pCount, "ClusterCounts", counts.get(), BindUsage::ReadWrite))
+            return false;
+        if (!Bind(*pScanLocal, "ClusterGridCB", gridCB.get(), BindUsage::Constant) ||
+            !Bind(*pScanLocal, "ClusterCounts", counts.get(), BindUsage::ReadWrite) ||
+            !Bind(*pScanLocal, "GroupSums", groupSums.get(), BindUsage::ReadWrite) ||
+            !Bind(*pScanLocal, "Stats", stats.get(), BindUsage::ReadWrite))
+            return false;
+        if (!Bind(*pScanSums, "ClusterGridCB", gridCB.get(), BindUsage::Constant) ||
+            !Bind(*pScanSums, "ClusterCounts", counts.get(), BindUsage::ReadWrite) ||
+            !Bind(*pScanSums, "GroupSums", groupSums.get(), BindUsage::ReadWrite) ||
+            !Bind(*pScanSums, "Stats", stats.get(), BindUsage::ReadWrite))
+            return false;
+        if (!Bind(*pFill, "ClusterGridCB", gridCB.get(), BindUsage::Constant) ||
+            !Bind(*pFill, "SliceLightCounts", sliceLightCounts.get(), BindUsage::ReadOnly) ||
+            !Bind(*pFill, "SliceLightIndices", sliceLightIndices.get(), BindUsage::ReadOnly) ||
+            !Bind(*pFill, "Lights", clusterLights.get(), BindUsage::ReadOnly) ||
+            !Bind(*pFill, "LightIndexList", lightIndex.get(), BindUsage::ReadWrite) ||
+            !Bind(*pFill, "LightGrid", lightGrid.get(), BindUsage::ReadWrite) ||
+            !Bind(*pFill, "ClusterCounts", counts.get(), BindUsage::ReadWrite) ||
+            !Bind(*pFill, "GroupSums", groupSums.get(), BindUsage::ReadWrite))
+            return false;
+        lastPointBuf = pointBuf;
+        lastSpotBuf = spotBuf;
+        bindingsDirty = false;
+        return true;
+    }
+
     bool RunGpu(IGraphicsDevice& dev, const LightingSystem& lights, const FrameLightView& view,
                 const ClusterCamera& cam) {
         ICommandContext& ctx = dev.ImmediateContext();
@@ -223,71 +278,39 @@ struct ClusterSystem::Impl {
         IGpuBuffer* spotBuf = lights.SpotLightBuffer();
         if (!pointBuf || !spotBuf) return Fail("LightingSystem::UploadToGPU(device) precisa rodar antes do Execute");
 
-        if (!gridCB->Update(&grid, sizeof(ClusterGridGPU)) || !viewCB->Update(&cam.view, sizeof(Mat4)))
-            return Fail("falha ao atualizar cbuffers de cluster");
+        if (!gridCB->Update(&grid, sizeof(ClusterGridGPU)))
+            return Fail("falha ao atualizar gridCB de cluster");
 
-        // 1) Prep: luzes -> view space + faixa de clusters
+        if (!viewCB->Update(&cam.view, sizeof(Mat4)))
+            return Fail("falha ao atualizar viewCB de cluster");
+        if (!BindAllPipelines(pointBuf, spotBuf)) return false;
+
+        // 1) Prep: luzes -> view space + faixa de clusters (sem luzes locais, pula)
         if (total > 0) {
-            if (!Bind(*pPrep, "ClusterGridCB", gridCB.get(), BindUsage::Constant) ||
-                !Bind(*pPrep, "ViewCB", viewCB.get(), BindUsage::Constant) ||
-                !Bind(*pPrep, "InPointLights", pointBuf, BindUsage::ReadOnly) ||
-                !Bind(*pPrep, "InSpotLights", spotBuf, BindUsage::ReadOnly) ||
-                !Bind(*pPrep, "OutClusterLights", clusterLights.get(), BindUsage::ReadWrite))
-                return false;
             if (!ctx.Dispatch(*pPrep, DivUp(total, 64))) return Fail("dispatch Prep falhou");
             ctx.UavBarrier(*clusterLights);
         }
 
         // 2) Compacta em ordem os candidatos de luz para cada fatia de profundidade.
-        if (!Bind(*pBin, "ClusterGridCB", gridCB.get(), BindUsage::Constant) ||
-            !Bind(*pBin, "Lights", clusterLights.get(), BindUsage::ReadOnly) ||
-            !Bind(*pBin, "SliceLightCounts", sliceLightCounts.get(), BindUsage::ReadWrite) ||
-            !Bind(*pBin, "SliceLightIndices", sliceLightIndices.get(), BindUsage::ReadWrite))
-            return false;
         if (!ctx.Dispatch(*pBin, grid.gridZ)) return Fail("dispatch LightBin falhou");
         ctx.UavBarrier(*sliceLightCounts);
         ctx.UavBarrier(*sliceLightIndices);
 
         // 3) Contagem por cluster, testando apenas candidatos da fatia atual.
-        if (!Bind(*pCount, "ClusterGridCB", gridCB.get(), BindUsage::Constant) ||
-            !Bind(*pCount, "SliceLightCounts", sliceLightCounts.get(), BindUsage::ReadOnly) ||
-            !Bind(*pCount, "SliceLightIndices", sliceLightIndices.get(), BindUsage::ReadOnly) ||
-            !Bind(*pCount, "Lights", clusterLights.get(), BindUsage::ReadOnly) ||
-            !Bind(*pCount, "ClusterCounts", counts.get(), BindUsage::ReadWrite))
-            return false;
         if (!ctx.Dispatch(*pCount, cullGroups)) return Fail("dispatch Count falhou");
         ctx.UavBarrier(*counts);
 
         // 4a) Scan local por grupo de 256
-        if (!Bind(*pScanLocal, "ClusterGridCB", gridCB.get(), BindUsage::Constant) ||
-            !Bind(*pScanLocal, "ClusterCounts", counts.get(), BindUsage::ReadWrite) ||
-            !Bind(*pScanLocal, "GroupSums", groupSums.get(), BindUsage::ReadWrite) ||
-            !Bind(*pScanLocal, "Stats", stats.get(), BindUsage::ReadWrite))
-            return false;
         if (!ctx.Dispatch(*pScanLocal, scanGroups)) return Fail("dispatch ScanLocal falhou");
         ctx.UavBarrier(*counts);
         ctx.UavBarrier(*groupSums);
 
         // 4b) Scan das somas dos grupos (1 grupo de 1024 threads) + total em Stats[0]
-        if (!Bind(*pScanSums, "ClusterGridCB", gridCB.get(), BindUsage::Constant) ||
-            !Bind(*pScanSums, "ClusterCounts", counts.get(), BindUsage::ReadWrite) ||
-            !Bind(*pScanSums, "GroupSums", groupSums.get(), BindUsage::ReadWrite) ||
-            !Bind(*pScanSums, "Stats", stats.get(), BindUsage::ReadWrite))
-            return false;
         if (!ctx.Dispatch(*pScanSums, 1)) return Fail("dispatch ScanGroupSums falhou");
         ctx.UavBarrier(*groupSums);
         ctx.UavBarrier(*stats);
 
         // 5) Preenche LightIndexList + LightGrid
-        if (!Bind(*pFill, "ClusterGridCB", gridCB.get(), BindUsage::Constant) ||
-            !Bind(*pFill, "SliceLightCounts", sliceLightCounts.get(), BindUsage::ReadOnly) ||
-            !Bind(*pFill, "SliceLightIndices", sliceLightIndices.get(), BindUsage::ReadOnly) ||
-            !Bind(*pFill, "Lights", clusterLights.get(), BindUsage::ReadOnly) ||
-            !Bind(*pFill, "LightIndexList", lightIndex.get(), BindUsage::ReadWrite) ||
-            !Bind(*pFill, "LightGrid", lightGrid.get(), BindUsage::ReadWrite) ||
-            !Bind(*pFill, "ClusterCounts", counts.get(), BindUsage::ReadWrite) ||
-            !Bind(*pFill, "GroupSums", groupSums.get(), BindUsage::ReadWrite))
-            return false;
         if (!ctx.Dispatch(*pFill, cullGroups)) return Fail("dispatch Fill falhou");
         ctx.UavBarrier(*lightIndex);
         ctx.UavBarrier(*lightGrid);
