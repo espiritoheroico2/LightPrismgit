@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cstring>
-#include <limits>
 #include <utility>
 
 #include "LightPrism/Util.hpp"
@@ -18,7 +17,6 @@ struct PassDef {
 };
 
 constexpr PassDef kPassPrep      {"LP_ClusterLightPrep", "Cluster/ClusterLightPrep.compute.hlsl", "CSMain"};
-constexpr PassDef kPassBin       {"LP_ClusterLightBin", "Cluster/ClusterLightBin.compute.hlsl", "CSMain"};
 constexpr PassDef kPassCount     {"LP_ClusterCullCount", "Cluster/ClusterCullCount.compute.hlsl", "CSMain"};
 constexpr PassDef kPassScanLocal {"LP_ClusterScanLocal", "Cluster/ClusterScan.compute.hlsl", "ScanLocal"};
 constexpr PassDef kPassScanSums  {"LP_ClusterScanGroupSums", "Cluster/ClusterScan.compute.hlsl", "ScanGroupSums"};
@@ -42,35 +40,34 @@ struct ClusterSystem::Impl {
 
     // Dispositivo e pipelines
     const IGraphicsDevice* boundDevice = nullptr;
-    std::unique_ptr<IComputePipeline> pPrep, pBin, pCount, pScanLocal, pScanSums, pFill;
+    std::unique_ptr<IComputePipeline> pPrep, pCount, pScanLocal, pScanSums, pFill;
     bool pipelinesTried = false;
-    bool bindingsDirty = true;          // algum buffer mudou: refaz os bindings dos pipelines
-    IGpuBuffer* lastPointBuf = nullptr; // bindings atuais (evita SetBuffer a cada quadro)
-    IGpuBuffer* lastSpotBuf = nullptr;
+    bool bindingsDirty = true;
     ClusterMode active = ClusterMode::Cpu;
     std::string lastError, fallbackReason;
 
     // Buffers
-    std::unique_ptr<IGpuBuffer> gridCB, viewCB, clusterLights, sliceLightCounts, sliceLightIndices, counts, groupSums,
-        stats, lightIndex, lightGrid, readback;
+    std::unique_ptr<IGpuBuffer> gridCB, viewCB, clusterLights, counts, groupSums, stats, lightIndex, lightGrid, readback;
+    IGpuBuffer* lastPointBuf = nullptr;
+    IGpuBuffer* lastSpotBuf = nullptr;
     uint64_t clusterLightsCap = 0;
-    uint64_t sliceLightIndicesCap = 0;
-    uint32_t allocSlices = 0;
     uint32_t allocClusters = 0, allocMaxIndices = 0;
+    bool zeroGridUploaded = false;
+    uint32_t zeroGridClusters = 0;
 
     // Stats do modo CPU (imediatos)
     ClusterStats cpuStats{};
     ClusterCullResult cpuResult; // reaproveitado entre frames
 
     void ResetDevice(const IGraphicsDevice* dev) {
-        pPrep.reset(); pBin.reset(); pScanLocal.reset(); pCount.reset(); pScanSums.reset(); pFill.reset();
-        gridCB.reset(); viewCB.reset(); clusterLights.reset(); sliceLightCounts.reset(); sliceLightIndices.reset();
-        counts.reset(); groupSums.reset();
+        pPrep.reset(); pScanLocal.reset(); pCount.reset(); pScanSums.reset(); pFill.reset();
+        gridCB.reset(); viewCB.reset(); clusterLights.reset(); counts.reset(); groupSums.reset();
         stats.reset(); lightIndex.reset(); lightGrid.reset(); readback.reset();
-        clusterLightsCap = 0; sliceLightIndicesCap = 0; allocSlices = 0; allocClusters = 0; allocMaxIndices = 0;
+        lastPointBuf = nullptr; lastSpotBuf = nullptr;
+        clusterLightsCap = 0; allocClusters = 0; allocMaxIndices = 0;
+        zeroGridUploaded = false; zeroGridClusters = 0;
         pipelinesTried = false;
         bindingsDirty = true;
-        lastPointBuf = nullptr; lastSpotBuf = nullptr;
         boundDevice = dev;
     }
 
@@ -86,15 +83,13 @@ struct ClusterSystem::Impl {
     }
 
     bool CreateAllPipelines(IGraphicsDevice& dev) {
-        return MakePipeline(dev, kPassPrep, pPrep) && MakePipeline(dev, kPassBin, pBin) &&
-               MakePipeline(dev, kPassCount, pCount) &&
+        return MakePipeline(dev, kPassPrep, pPrep) && MakePipeline(dev, kPassCount, pCount) &&
                MakePipeline(dev, kPassScanLocal, pScanLocal) && MakePipeline(dev, kPassScanSums, pScanSums) &&
                MakePipeline(dev, kPassFill, pFill);
     }
 
     std::unique_ptr<IGpuBuffer> Make(IGraphicsDevice& dev, BufferKind kind, uint64_t elems, uint32_t stride,
                                      const char* name) {
-        if (stride == 0 || elems > std::numeric_limits<uint64_t>::max() / stride) return nullptr;
         BufferDesc b;
         b.kind = kind;
         b.strideBytes = stride;
@@ -104,7 +99,7 @@ struct ClusterSystem::Impl {
     }
 
     // (Re)cria o que depende do tamanho do grid. Buffers de tamanho fixo (cbuffers, stats) criados uma vez.
-    bool EnsureBuffers(IGraphicsDevice& dev, uint32_t lightCount, bool gpuRequired) {
+    bool EnsureBuffers(IGraphicsDevice& dev, uint32_t lightCount) {
         const uint32_t clusters = ClusterCount(grid);
         if (!gridCB) {
             gridCB = Make(dev, BufferKind::Uniform, 1, sizeof(ClusterGridGPU), "LP_ClusterGridCB");
@@ -123,31 +118,16 @@ struct ClusterSystem::Impl {
             if (!counts || !groupSums || !lightGrid || !lightIndex) return false;
             allocClusters = clusters;
             allocMaxIndices = grid.maxIndices;
+            zeroGridUploaded = false;
             bindingsDirty = true;
         }
-        if (gpuRequired) {
-            const uint64_t need = std::max<uint64_t>(lightCount, 1);
-            if (!clusterLights || clusterLightsCap < need) {
-                const uint64_t cap = NextPow2(need);
-                clusterLights = Make(dev, BufferKind::StructuredRW, cap, sizeof(ClusterLightGPU), "LP_ClusterLights");
-                if (!clusterLights) return false;
-                clusterLightsCap = cap;
-                bindingsDirty = true;
-            }
-            if (!sliceLightCounts || allocSlices != grid.gridZ) {
-                sliceLightCounts = Make(dev, BufferKind::StructuredRW, grid.gridZ, 4, "LP_ClusterSliceLightCounts");
-                if (!sliceLightCounts) return false;
-                allocSlices = grid.gridZ;
-                bindingsDirty = true;
-            }
-            const uint64_t sliceIndexNeed = uint64_t(grid.gridZ) * need;
-            if (sliceIndexNeed > std::numeric_limits<uint32_t>::max()) return false;
-            if (!sliceLightIndices || sliceLightIndicesCap < sliceIndexNeed) {
-                sliceLightIndices = Make(dev, BufferKind::StructuredRW, sliceIndexNeed, 4, "LP_ClusterSliceLightIndices");
-                if (!sliceLightIndices) return false;
-                sliceLightIndicesCap = sliceIndexNeed;
-                bindingsDirty = true;
-            }
+        const uint64_t need = std::max<uint64_t>(lightCount, 1);
+        if (!clusterLights || clusterLightsCap < need) {
+            const uint64_t cap = NextPow2(need);
+            clusterLights = Make(dev, BufferKind::StructuredRW, cap, sizeof(ClusterLightGPU), "LP_ClusterLights");
+            if (!clusterLights) return false;
+            clusterLightsCap = cap;
+            bindingsDirty = true;
         }
         return true;
     }
@@ -166,6 +146,7 @@ struct ClusterSystem::Impl {
             aabbs.clear(); // reconstruído sob demanda no modo CPU
             lastCamera = cam;
             haveGrid = true;
+            zeroGridUploaded = false;
         }
         grid.numPointLights = np;
         grid.numSpotLights = ns;
@@ -218,7 +199,6 @@ struct ClusterSystem::Impl {
         return true;
     }
 
-    // Liga todos os buffers aos pipelines. So refaz quando algum buffer mudou (ou a luz de entrada mudou).
     bool BindAllPipelines(IGpuBuffer* pointBuf, IGpuBuffer* spotBuf) {
         if (!bindingsDirty && pointBuf == lastPointBuf && spotBuf == lastSpotBuf) return true;
         if (!Bind(*pPrep, "ClusterGridCB", gridCB.get(), BindUsage::Constant) ||
@@ -227,36 +207,32 @@ struct ClusterSystem::Impl {
             !Bind(*pPrep, "InSpotLights", spotBuf, BindUsage::ReadOnly) ||
             !Bind(*pPrep, "OutClusterLights", clusterLights.get(), BindUsage::ReadWrite))
             return false;
-        if (!Bind(*pBin, "ClusterGridCB", gridCB.get(), BindUsage::Constant) ||
-            !Bind(*pBin, "Lights", clusterLights.get(), BindUsage::ReadOnly) ||
-            !Bind(*pBin, "SliceLightCounts", sliceLightCounts.get(), BindUsage::ReadWrite) ||
-            !Bind(*pBin, "SliceLightIndices", sliceLightIndices.get(), BindUsage::ReadWrite))
-            return false;
+
         if (!Bind(*pCount, "ClusterGridCB", gridCB.get(), BindUsage::Constant) ||
-            !Bind(*pCount, "SliceLightCounts", sliceLightCounts.get(), BindUsage::ReadOnly) ||
-            !Bind(*pCount, "SliceLightIndices", sliceLightIndices.get(), BindUsage::ReadOnly) ||
             !Bind(*pCount, "Lights", clusterLights.get(), BindUsage::ReadOnly) ||
             !Bind(*pCount, "ClusterCounts", counts.get(), BindUsage::ReadWrite))
             return false;
+
         if (!Bind(*pScanLocal, "ClusterGridCB", gridCB.get(), BindUsage::Constant) ||
             !Bind(*pScanLocal, "ClusterCounts", counts.get(), BindUsage::ReadWrite) ||
             !Bind(*pScanLocal, "GroupSums", groupSums.get(), BindUsage::ReadWrite) ||
             !Bind(*pScanLocal, "Stats", stats.get(), BindUsage::ReadWrite))
             return false;
+
         if (!Bind(*pScanSums, "ClusterGridCB", gridCB.get(), BindUsage::Constant) ||
             !Bind(*pScanSums, "ClusterCounts", counts.get(), BindUsage::ReadWrite) ||
             !Bind(*pScanSums, "GroupSums", groupSums.get(), BindUsage::ReadWrite) ||
             !Bind(*pScanSums, "Stats", stats.get(), BindUsage::ReadWrite))
             return false;
+
         if (!Bind(*pFill, "ClusterGridCB", gridCB.get(), BindUsage::Constant) ||
-            !Bind(*pFill, "SliceLightCounts", sliceLightCounts.get(), BindUsage::ReadOnly) ||
-            !Bind(*pFill, "SliceLightIndices", sliceLightIndices.get(), BindUsage::ReadOnly) ||
             !Bind(*pFill, "Lights", clusterLights.get(), BindUsage::ReadOnly) ||
             !Bind(*pFill, "LightIndexList", lightIndex.get(), BindUsage::ReadWrite) ||
             !Bind(*pFill, "LightGrid", lightGrid.get(), BindUsage::ReadWrite) ||
             !Bind(*pFill, "ClusterCounts", counts.get(), BindUsage::ReadWrite) ||
             !Bind(*pFill, "GroupSums", groupSums.get(), BindUsage::ReadWrite))
             return false;
+
         lastPointBuf = pointBuf;
         lastSpotBuf = spotBuf;
         bindingsDirty = false;
@@ -271,7 +247,7 @@ struct ClusterSystem::Impl {
         const uint32_t cullGroups = DivUp(clusters, 64);
         const uint32_t scanGroups = DivUp(clusters, kClusterScanGroupSize);
         const uint32_t maxG = dev.Caps().maxComputeGroupsPerDim;
-        if (cullGroups > maxG || scanGroups > maxG || grid.gridZ > maxG)
+        if (cullGroups > maxG || scanGroups > maxG)
             return Fail("grid grande demais para um dispatch 1D: aumente tileSizePx ou reduza zSlices");
 
         IGpuBuffer* pointBuf = lights.PointLightBuffer();
@@ -281,41 +257,50 @@ struct ClusterSystem::Impl {
         if (!gridCB->Update(&grid, sizeof(ClusterGridGPU)))
             return Fail("falha ao atualizar gridCB de cluster");
 
+        // Fast-path: cena sem luzes locais (apenas luz direcional/ambiente) -> pula os 5 dispatches de compute.
+        if (total == 0) {
+            if (!zeroGridUploaded || zeroGridClusters != clusters) {
+                cpuResult.cells.assign(clusters, ClusterCell{0u, 0u});
+                if (!lightGrid->Update(cpuResult.cells.data(), uint64_t(clusters) * sizeof(ClusterCell)))
+                    return Fail("falha ao zerar LightGrid");
+                uint32_t zeroStat = 0u;
+                stats->Update(&zeroStat, 4);
+                zeroGridUploaded = true;
+                zeroGridClusters = clusters;
+            }
+            return true;
+        }
+        zeroGridUploaded = false;
+
         if (!viewCB->Update(&cam.view, sizeof(Mat4)))
             return Fail("falha ao atualizar viewCB de cluster");
+
         if (!BindAllPipelines(pointBuf, spotBuf)) return false;
 
-        // 1) Prep: luzes -> view space + faixa de clusters (sem luzes locais, pula)
-        if (total > 0) {
-            if (!ctx.Dispatch(*pPrep, DivUp(total, 64))) return Fail("dispatch Prep falhou");
-            ctx.UavBarrier(*clusterLights);
-        }
+        // 1) Prep: luzes -> view space + faixa de clusters
+        if (!ctx.Dispatch(*pPrep, DivUp(total, 64))) return Fail("dispatch Prep falhou");
+        ctx.UavBarrier(*clusterLights);
 
-        // 2) Compacta em ordem os candidatos de luz para cada fatia de profundidade.
-        if (!ctx.Dispatch(*pBin, grid.gridZ)) return Fail("dispatch LightBin falhou");
-        ctx.UavBarrier(*sliceLightCounts);
-        ctx.UavBarrier(*sliceLightIndices);
-
-        // 3) Contagem por cluster, testando apenas candidatos da fatia atual.
+        // 2) Contagem por cluster
         if (!ctx.Dispatch(*pCount, cullGroups)) return Fail("dispatch Count falhou");
         ctx.UavBarrier(*counts);
 
-        // 4a) Scan local por grupo de 256
+        // 3a) Scan local por grupo de 256
         if (!ctx.Dispatch(*pScanLocal, scanGroups)) return Fail("dispatch ScanLocal falhou");
         ctx.UavBarrier(*counts);
         ctx.UavBarrier(*groupSums);
 
-        // 4b) Scan das somas dos grupos (1 grupo de 1024 threads) + total em Stats[0]
+        // 3b) Scan das somas dos grupos (1 grupo de 1024 threads) + total em Stats[0]
         if (!ctx.Dispatch(*pScanSums, 1)) return Fail("dispatch ScanGroupSums falhou");
         ctx.UavBarrier(*groupSums);
         ctx.UavBarrier(*stats);
 
-        // 5) Preenche LightIndexList + LightGrid
+        // 4) Preenche LightIndexList + LightGrid
         if (!ctx.Dispatch(*pFill, cullGroups)) return Fail("dispatch Fill falhou");
         ctx.UavBarrier(*lightIndex);
         ctx.UavBarrier(*lightGrid);
 
-        // 6) Stats -> readback (lido alguns frames depois, sem travar a GPU)
+        // 5) Stats -> readback (lido alguns frames depois, sem travar a GPU)
         if (!ctx.CopyBuffer(*stats, *readback, 4)) return Fail("CopyBuffer de Stats falhou");
         return true;
     }
@@ -334,8 +319,6 @@ bool ClusterSystem::Execute(IGraphicsDevice& dev, const LightingSystem& lights, 
     if (cam.screenWidth == 0 || cam.screenHeight == 0 || !(cam.zNear > 0.0f) || !(cam.zFar > cam.zNear) ||
         !(cam.proj00 > 0.0f) || !(cam.proj11 > 0.0f))
         return s.Fail("ClusterCamera inválida (tela, near/far ou projeção)");
-    if (uint64_t(view.pointCount) + view.spotCount > std::numeric_limits<uint32_t>::max())
-        return s.Fail("quantidade total de luzes excede o limite de indexação GPU");
 
     if (s.boundDevice != &dev) s.ResetDevice(&dev);
 
@@ -351,7 +334,7 @@ bool ClusterSystem::Execute(IGraphicsDevice& dev, const LightingSystem& lights, 
             s.fallbackReason = "dispositivo sem compute shaders";
         } else if (!s.CreateAllPipelines(dev)) {
             s.active = ClusterMode::Cpu;
-            s.pPrep.reset(); s.pBin.reset(); s.pCount.reset(); s.pScanLocal.reset(); s.pScanSums.reset(); s.pFill.reset();
+            s.pPrep.reset(); s.pCount.reset(); s.pScanLocal.reset(); s.pScanSums.reset(); s.pFill.reset();
         } else {
             s.active = ClusterMode::Gpu;
         }
@@ -361,8 +344,7 @@ bool ClusterSystem::Execute(IGraphicsDevice& dev, const LightingSystem& lights, 
 
     s.UpdateGrid(cam, view.pointCount, view.spotCount);
     s.AdaptBudget(*this);
-    if (!s.EnsureBuffers(dev, view.pointCount + view.spotCount, s.active == ClusterMode::Gpu))
-        return s.Fail("falha ao criar buffers de cluster");
+    if (!s.EnsureBuffers(dev, view.pointCount + view.spotCount)) return s.Fail("falha ao criar buffers de cluster");
 
     return s.active == ClusterMode::Gpu ? s.RunGpu(dev, lights, view, cam) : s.RunCpu(dev, view, cam);
 }
@@ -371,9 +353,8 @@ uint64_t ClusterSystem::AllocatedBytes() const {
     const Impl& s = *m_impl;
     if (!s.counts) return 0;
     const uint64_t clusters = s.allocClusters;
-    const uint64_t slices = s.allocSlices;
     return clusters * 4 + DivUp(uint32_t(clusters), kClusterScanGroupSize) * 4ull + clusters * sizeof(ClusterCell) +
-           uint64_t(s.allocMaxIndices) * 4 + slices * 4 + s.sliceLightIndicesCap * 4;
+           uint64_t(s.allocMaxIndices) * 4;
 }
 
 ClusterMode ClusterSystem::ActiveMode() const { return m_impl->active; }

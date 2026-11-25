@@ -1,7 +1,6 @@
 # Light Prism
 
 Biblioteca de iluminação e sombras 3D, leve e independente de engine e de API gráfica.
-Created by : João Vitor Dias da Silva @espiritoheroico2
 
 ## Estrutura
 

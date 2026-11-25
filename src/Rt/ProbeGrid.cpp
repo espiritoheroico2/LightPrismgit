@@ -1,7 +1,6 @@
 #include "LightPrism/Rt/ProbeGrid.hpp"
 
 #include <cmath>
-#include <limits>
 
 #include "LightPrism/Rt/Transfer.hpp"   // FibonacciSphere
 
@@ -31,43 +30,13 @@ Vec3 Rotate(const Vec3& v, const Vec3& axis, float c, float s) {   // Rodrigues
 }
 }
 
-bool ProbeGrid::Init(const ProbeGridDesc& d) {
-    if (d.nx < 2 || d.ny < 2 || d.nz < 2 || d.raysPerProbe == 0 ||
-        !std::isfinite(d.spacing) || d.spacing <= 0.0f || !std::isfinite(1.0f / d.spacing) ||
-        !std::isfinite(d.maxDistance) || d.maxDistance <= 0.0f ||
-        !std::isfinite(d.hysteresis) || d.hysteresis < 0.0f || d.hysteresis >= 1.0f ||
-        !std::isfinite(d.normalBias) || d.normalBias < 0.0f ||
-        !std::isfinite(d.invalidateRadius) || d.invalidateRadius < 0.0f ||
-        !std::isfinite(d.origin.x) || !std::isfinite(d.origin.y) || !std::isfinite(d.origin.z))
-        return false;
-
-    const uint64_t xy = uint64_t(d.nx) * d.ny;
-    if (xy > std::numeric_limits<uint32_t>::max() / d.nz) return false;
-    const uint32_t count = static_cast<uint32_t>(xy * d.nz);
-    const float maxX = d.origin.x + float(d.nx - 1) * d.spacing;
-    const float maxY = d.origin.y + float(d.ny - 1) * d.spacing;
-    const float maxZ = d.origin.z + float(d.nz - 1) * d.spacing;
-    const float visibilityDistance = 3.0f * d.spacing;
-    if (!std::isfinite(maxX) || !std::isfinite(maxY) || !std::isfinite(maxZ) ||
-        !std::isfinite(visibilityDistance) || !std::isfinite(visibilityDistance * visibilityDistance))
-        return false;
-
-    std::vector<Probe> probes(count, Probe{});
-    std::vector<uint8_t> valid(count, 0);
-    std::vector<Vec3> dirs = FibonacciSphere(d.raysPerProbe);
-    const float vd = visibilityDistance;
-    for (Probe& p : probes)
-        for (int o = 0; o < kVisTexels; ++o) {
-            p.m1[o] = vd;
-            p.m2[o] = vd * vd;
-        }
-
+void ProbeGrid::Init(const ProbeGridDesc& d) {
     d_ = d;
-    probes_.swap(probes);
-    valid_.swap(valid);
-    dirs_.swap(dirs);
+    probes_.assign(Count(), Probe{});
+    valid_.assign(Count(), 0);
+    dirs_ = FibonacciSphere(d.raysPerProbe);
     cursor_ = 0; frame_ = 0; stats_ = {};
-    return true;
+    const float vd = 3.0f * d.spacing; for (Probe& p : probes_) for (int o = 0; o < kVisTexels; ++o) { p.m1[o] = vd; p.m2[o] = vd * vd; }
 }
 
 void ProbeGrid::UpdateOne(const Bvh& bvh, const ProbeEnvironment& env, uint32_t i) {
@@ -129,7 +98,6 @@ void ProbeGrid::UpdateOne(const Bvh& bvh, const ProbeEnvironment& env, uint32_t 
 
 uint32_t ProbeGrid::Update(const Bvh& bvh, const ProbeEnvironment& env, uint32_t budget) {
     const uint32_t n = Count();
-    if (n == 0) return 0;
     const uint32_t todo = budget == 0 || budget > n ? n : budget;
     for (uint32_t k = 0; k < todo; ++k) UpdateOne(bvh, env, (cursor_ + k) % n);
     cursor_ = (cursor_ + todo) % n;
@@ -152,7 +120,6 @@ uint32_t ProbeGrid::InvalidateRegion(const Aabb& changed) {
 void ProbeGrid::InvalidateAll() { std::fill(valid_.begin(), valid_.end(), uint8_t(0)); }
 
 Vec3 ProbeGrid::Irradiance(const Vec3& p, const Vec3& n, bool useVisibility) const {
-    if (probes_.empty()) return {};
     const Vec3 q = (p - d_.origin) * (1.0f / d_.spacing);
     const int x0 = std::max(0, std::min(int(std::floor(q.x)), int(d_.nx) - 2)), y0 = std::max(0, std::min(int(std::floor(q.y)), int(d_.ny) - 2)),
               z0 = std::max(0, std::min(int(std::floor(q.z)), int(d_.nz) - 2));

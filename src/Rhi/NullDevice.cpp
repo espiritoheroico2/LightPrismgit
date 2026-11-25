@@ -17,16 +17,12 @@ public:
     const BufferDesc& Desc() const override { return m_desc; }
 
     bool Update(const void* data, uint64_t size, uint64_t offset) override {
-        const uint64_t capacity = m_bytes.size();
-        if (m_desc.kind == BufferKind::Readback || offset > capacity || size > capacity - offset || (size > 0 && !data))
-            return false;
+        if (m_desc.kind == BufferKind::Readback || offset + size > m_bytes.size()) return false;
         if (size) std::memcpy(m_bytes.data() + offset, data, static_cast<size_t>(size));
         return true;
     }
     bool ReadBack(void* dst, uint64_t size, uint64_t offset) override {
-        const uint64_t capacity = m_bytes.size();
-        if (m_desc.kind != BufferKind::Readback || offset > capacity || size > capacity - offset || (size > 0 && !dst))
-            return false;
+        if (m_desc.kind != BufferKind::Readback || offset + size > m_bytes.size()) return false;
         if (size) std::memcpy(dst, m_bytes.data() + offset, static_cast<size_t>(size));
         return true;
     }

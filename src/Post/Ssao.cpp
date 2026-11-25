@@ -161,87 +161,6 @@ void ComputeSsaoHalf(const SsaoConfig& cfg, const SsaoInput& full, std::vector<f
         }
 }
 
-void ComputeHbaoRaw(const HbaoConfig& cfg, const HbaoInput& in, std::vector<float>& out) {
-    const uint32_t width = in.width, height = in.height;
-    out.assign(size_t(width) * height, 1.0f);
-    if (width == 0 || height == 0 || !in.viewDepth || !in.viewNormal ||
-        !std::isfinite(in.proj00) || !std::isfinite(in.proj11) ||
-        !std::isfinite(cfg.radius) || !std::isfinite(cfg.bias) || !std::isfinite(cfg.power) ||
-        !std::isfinite(cfg.blurDepthRel) || !std::isfinite(cfg.fadeStart) || !std::isfinite(cfg.fadeEnd) ||
-        !std::isfinite(cfg.maxScreenRadius) || !(in.proj00 > 0.0f) || !(in.proj11 > 0.0f) ||
-        !(cfg.radius > 0.0f) || !(cfg.maxScreenRadius > 0.0f))
-        return;
-
-    const uint32_t directions = std::min(std::max(cfg.directions, 1u), 16u);
-    const uint32_t steps = std::min(std::max(cfg.steps, 1u), 16u);
-    const float biasRatio = Saturate(cfg.bias / cfg.radius);
-
-    for (uint32_t y = 0; y < height; ++y)
-        for (uint32_t x = 0; x < width; ++x) {
-            const size_t index = size_t(y) * width + x;
-            const float depth = in.viewDepth[index];
-            if (!(depth > 0.0f)) continue;
-
-            const Vec3 position = ViewPosFromDepth(in, x, y, depth);
-            const Vec3 normal = Normalize(in.viewNormal[index]);
-            const float pixelRadiusX = std::min(cfg.radius * in.proj00 * float(width) / (2.0f * depth),
-                                                cfg.maxScreenRadius);
-            const float pixelRadiusY = std::min(cfg.radius * in.proj11 * float(height) / (2.0f * depth),
-                                                cfg.maxScreenRadius);
-            const float rotation = KernelRotation(x, y);
-            float occlusion = 0.0f;
-
-            for (uint32_t direction = 0; direction < directions; ++direction) {
-                const float angle = rotation + 2.0f * kPi * float(direction) / float(directions);
-                const float dirX = std::cos(angle), dirY = std::sin(angle);
-                float horizon = 0.0f;
-                float horizonDistance = cfg.radius;
-
-                for (uint32_t step = 1; step <= steps; ++step) {
-                    const float t = float(step) / float(steps);
-                    const int sampleX = int(x) + int(std::floor(dirX * pixelRadiusX * t + 0.5f));
-                    const int sampleY = int(y) + int(std::floor(dirY * pixelRadiusY * t + 0.5f));
-                    if (sampleX < 0 || sampleY < 0 || sampleX >= int(width) || sampleY >= int(height) ||
-                        (sampleX == int(x) && sampleY == int(y)))
-                        continue;
-
-                    const float sampleDepth = in.viewDepth[size_t(sampleY) * width + uint32_t(sampleX)];
-                    if (!(sampleDepth > 0.0f)) continue;
-                    const Vec3 samplePosition = ViewPosFromDepth(in, uint32_t(sampleX), uint32_t(sampleY), sampleDepth);
-                    const Vec3 delta = samplePosition - position;
-                    const float distance = Length(delta);
-                    if (!(distance > 1e-5f) || distance >= cfg.radius) continue;
-
-                    const float elevation = Dot(normal, delta) / distance;
-                    const float candidate = Saturate((elevation - biasRatio) / std::max(1.0f - biasRatio, 1e-4f));
-                    if (candidate > horizon) {
-                        horizon = candidate;
-                        horizonDistance = distance;
-                    }
-                }
-
-                occlusion += horizon * Saturate(1.0f - horizonDistance / cfg.radius);
-            }
-
-            const float ao = Saturate(1.0f - occlusion / float(directions));
-            const float shaped = cfg.power == 1.0f ? ao : std::pow(ao, std::max(cfg.power, 0.0f));
-            const float fade = SmoothStep01((depth - cfg.fadeStart) / std::max(cfg.fadeEnd - cfg.fadeStart, 1e-3f));
-            out[index] = Lerp(shaped, 1.0f, fade);
-        }
-}
-
-void ComputeHbao(const HbaoConfig& cfg, const HbaoInput& in, std::vector<float>& out) {
-    std::vector<float> raw;
-    ComputeHbaoRaw(cfg, in, raw);
-    if (in.width == 0 || in.height == 0 || !in.viewDepth || !in.viewNormal) {
-        out.swap(raw);
-        return;
-    }
-    SsaoConfig blurConfig;
-    blurConfig.blurDepthRel = cfg.blurDepthRel;
-    BilateralBlur(blurConfig, in, raw, out);
-}
-
 SsaoGPU MakeSsaoGPU(const SsaoConfig& cfg, uint32_t width, uint32_t height, const float proj[4][4]) {
     SsaoGPU g{};
     const uint32_t n = std::min(std::max(cfg.kernelSize, 1u), kMaxKernel);
@@ -254,20 +173,6 @@ SsaoGPU MakeSsaoGPU(const SsaoConfig& cfg, uint32_t width, uint32_t height, cons
     g.radius = cfg.radius; g.bias = cfg.bias; g.power = cfg.power; g.blurDepthRel = cfg.blurDepthRel;
     g.kernelSize = n;
     g.biasPerMeter = cfg.biasPerMeter; g.fadeStart = cfg.fadeStart; g.fadeEnd = cfg.fadeEnd;
-    return g;
-}
-
-HbaoGPU MakeHbaoGPU(const HbaoConfig& cfg, uint32_t width, uint32_t height, const float proj[4][4]) {
-    HbaoGPU g{};
-    g.proj00 = proj[0][0]; g.proj11 = proj[1][1];
-    g.proj22 = proj[2][2]; g.proj23 = proj[2][3];
-    g.width = width; g.height = height;
-    g.radius = cfg.radius; g.bias = cfg.bias;
-    g.directions = std::min(std::max(cfg.directions, 1u), 16u);
-    g.steps = std::min(std::max(cfg.steps, 1u), 16u);
-    g.power = cfg.power; g.blurDepthRel = cfg.blurDepthRel;
-    g.fadeStart = cfg.fadeStart; g.fadeEnd = cfg.fadeEnd;
-    g.maxScreenRadius = cfg.maxScreenRadius;
     return g;
 }
 

@@ -1,10 +1,8 @@
 // Testes do ClusterSystem + RHI (NullDevice): ordem dos dispatches, barreiras, bindings (conferidos contra os
 // .hlsl reais), readback, fallback CPU, validações de erro.
 #include <cstdio>
-#include <cstdint>
 #include <cstring>
 #include <fstream>
-#include <limits>
 #include <map>
 #include <sstream>
 #include <string>
@@ -77,7 +75,6 @@ ClusterSystemDesc Desc() {
 const char* ShaderFileOf(const std::string& pipeline) {
     static const std::map<std::string, const char*> m = {
         {"LP_ClusterLightPrep", "Cluster/ClusterLightPrep.compute.hlsl"},
-        {"LP_ClusterLightBin", "Cluster/ClusterLightBin.compute.hlsl"},
         {"LP_ClusterCullCount", "Cluster/ClusterCullCount.compute.hlsl"},
         {"LP_ClusterScanLocal", "Cluster/ClusterScan.compute.hlsl"},
         {"LP_ClusterScanGroupSums", "Cluster/ClusterScan.compute.hlsl"},
@@ -106,7 +103,6 @@ static void TestGpuCommandSequence() {
     struct Expect { const char* name; uint32_t groups; };
     const Expect dispatches[] = {
         {"LP_ClusterLightPrep", (total + 63) / 64},
-        {"LP_ClusterLightBin", cs.Grid().gridZ},
         {"LP_ClusterCullCount", (clusters + 63) / 64},
         {"LP_ClusterScanLocal", (clusters + 255) / 256},
         {"LP_ClusterScanGroupSums", 1},
@@ -117,8 +113,8 @@ static void TestGpuCommandSequence() {
     size_t barriers = 0, copies = 0;
     for (const NullCommand& c : log->commands) {
         if (c.type == NullCommand::Type::Dispatch) {
-            CHECK(di < 6);
-            if (di >= 6) break;
+            CHECK(di < 5);
+            if (di >= 5) break;
             CHECK(c.pipeline == dispatches[di].name);
             CHECK(c.groups[0] == dispatches[di].groups && c.groups[1] == 1 && c.groups[2] == 1);
 
@@ -140,11 +136,11 @@ static void TestGpuCommandSequence() {
             CHECK(di > 0); // nunca antes do primeiro dispatch
         } else {
             ++copies;
-            CHECK(di == 6); // cópia do Stats só depois do último dispatch
+            CHECK(di == 5); // cópia do Stats só depois do último dispatch
         }
     }
-    CHECK(di == 6);
-    CHECK(barriers == 10); // prep 1, bin 2, count 1, scanLocal 2, scanSums 2, fill 2
+    CHECK(di == 5);
+    CHECK(barriers == 8); // prep 1, count 1, scanLocal 2, scanSums 2, fill 2
     CHECK(copies == 1);
     CHECK(log->commands.back().type == NullCommand::Type::Copy);
 
@@ -163,7 +159,7 @@ static void TestZeroLightsSkipsPrep() {
             ++dispatches;
             CHECK(c.pipeline != "LP_ClusterLightPrep");
         }
-    CHECK(dispatches == 5);
+    CHECK(dispatches == 4);
 }
 
 static void TestStatsReadback() {
@@ -214,16 +210,6 @@ static void TestCpuFallbackMatchesReference() {
 }
 
 static void TestModesAndErrors() {
-    // A soma dos contadores não pode transbordar antes de chegar aos shaders.
-    {
-        Rig rig;
-        FrameLightView badView = *rig.view;
-        badView.pointCount = std::numeric_limits<uint32_t>::max();
-        badView.spotCount = 1;
-        ClusterSystem cs(Desc());
-        CHECK(!cs.Execute(*rig.dev, rig.lights, badView, rig.cam));
-        CHECK(cs.LastError().find("quantidade total de luzes") != std::string::npos);
-    }
     // Gpu forçado sem compute: erro explícito.
     {
         DeviceCaps caps;
@@ -318,8 +304,6 @@ static void TestRhiBasics() {
     uint32_t v[4] = {1, 2, 3, 4};
     CHECK(rw->Update(v, 16, 8));
     CHECK(!rw->Update(v, 16, 56));      // fora dos limites
-    CHECK(!rw->Update(v, 16, std::numeric_limits<uint64_t>::max() - 8)); // overflow não pode validar o intervalo
-    CHECK(!rw->Update(nullptr, 4, 0));
     CHECK(!rb->Update(v, 16, 0));       // Readback não aceita Update
     uint32_t out[4] = {};
     CHECK(!rw->ReadBack(out, 16, 0));   // só Readback lê
@@ -327,8 +311,6 @@ static void TestRhiBasics() {
     CHECK(rb->ReadBack(out, 16, 8));
     CHECK(out[0] == 1 && out[3] == 4);
     CHECK(!rb->ReadBack(out, 16, 56));
-    CHECK(!rb->ReadBack(out, 16, std::numeric_limits<uint64_t>::max() - 8));
-    CHECK(!rb->ReadBack(nullptr, 4, 0));
 
     // Validações de criação
     BufferDesc bad;

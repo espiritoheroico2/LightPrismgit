@@ -34,28 +34,7 @@ Corretude: 4 000 raios infinitos + 4 000 com limite aleatório contra força bru
 ![Sombras](images/rt_sheet_sun.png)
 *Sombra RT dura, suave (penumbra cresce com a distância ao oclusor) e limitada a 1,5 m (só sombra de contato).*
 
-## 3. Reflexos híbridos RT + SSR
-
-`Rt::TraceHybridReflection` limita cada raio de reflexão do BVH por `HybridReflectionConfig::maxRtDistance` (padrão: 100 m).
-Um acerto é sombreado pelo host; a função combina essa radiância com a amostra SSR e o ambiente. `blendStartDistance` controla
-a transição suave antes do limite e a confiança SSR distribui o peso restante entre SSR e ambiente. Se o BVH não acertar dentro do
-alcance, o SSR continua sendo usado onde tiver confiança. `enabled=false` desativa a consulta RT sem desativar SSR.
-
-`shaders/Rt/RtSsrHybrid.hlsli` fornece as mesmas etapas para HLSL: `RtSsrHybridTrace` devolve distância, índice da folha e
-coordenadas baricêntricas; `RtSsrHybridResolve` combina RT/SSR/ambiente. O índice de triângulo devolvido é da ordem das folhas,
-e deve ser convertido pelo host usando `Bvh::LeafOrderIndices()`.
-
-Limite importante: Light Prism não implementa o passe SSR nem tem texturas/render targets/draw no RHI. O host precisa gerar a cor e a
-confiança SSR e sombrear o acerto RT com os materiais da cena. Este módulo faz o limite de distância e a composição, não é uma
-integração de renderer completa.
-
-## 4. Debug visual
-
-`LightPrism/Debug/Visualize.hpp` extrai linhas independentes de renderer: caixas wireframe dos nós BVH (com filtro de profundidade e
-limite de nós), volumes de alcance das point lights, cones das spot lights, direção do sol e raios RT. `HeatColor` converte escalares
-como AO/confiança SSR em azul-verde-vermelho. O host envia essas linhas ao seu renderer de debug; a RHI não desenha geometria.
-
-## 5. Ray tracing que guarda o cálculo: PRT (`Rt::TransferCache`)
+## 3. Ray tracing que guarda o cálculo: PRT (`Rt::TransferCache`)
 
 A pergunta "dá para salvar os cálculos?" — **sim, a parte cara é a visibilidade, e ela só depende da geometria**.
 Para cada amostra (ponto + normal) guardamos 9 floats `T_k = ∫ V(ω)·max(0,n·ω)·Y_k(ω) dω` (visibilidade × cosseno em SH9,
@@ -86,22 +65,6 @@ Vec3 ambient = prt.Irradiance(i, L) * albedo;    // por amostra (ou por vértice
 bvh.Refit(newTris);  prt.InvalidateRegion(oldBox);  prt.InvalidateRegion(newBox);  prt.Bake(bvh, budget);
 ```
 
-## 6. Cache de AO/sombra por amostra e Memoryartner experimental
-
-`Rt::SurfaceBakeCache` pré-calcula AO e visibilidade de uma luz direcional por amostra de superfície. A engine fornece pontos/normais
-(por exemplo, amostras de UV/lightmap), mapeia cada índice de volta à superfície e escolhe como aplicar ou persistir os resultados.
-`Bake(bvh, budget)` é incremental; `InvalidateRegion` suja amostras dentro do maior alcance configurado. O cache tem serialização
-binária versionada, com validação de tamanho e valores. Não é um shadow-map renderizado: a biblioteca não possui passe de rasterização,
-e a visibilidade salva é de uma única direção solar; luzes dinâmicas continuam exigindo sombra dinâmica.
-
-`Rt::Memoryartner` é um scheduler **experimental e opt-in** para consultas de raio. Ele aceita um callback de GPU fornecido pelo host
-e executa em paralelo os raios destinados ao callback e ao BVH em RAM da CPU. O host informa orçamentos conservadores de GPU e o limite de memória do BVH
-residente; se não houver memória de CPU suficiente, o scheduler mantém o lote na GPU quando o orçamento permite, ou retorna um status
-de orçamento excedido. Falha no callback de GPU é reportada, não escondida. Não transfere RAM/SSD para VRAM, não faz swap e não foi
-medido em GPU real; a classe `Bvh` atual é CPU-only. Seu uso não deve ser habilitado em produção sem benchmark no host.
-
-Ambos os módulos são independentes do renderer e têm testes em `lp_rt_experimental_tests`.
-
 ## O que veio do documento de técnicas avançadas (PDF)
 
 | Técnica | Decisão |
@@ -119,6 +82,3 @@ Ambos os módulos são independentes do renderer e têm testes em `lp_rt_experim
 - O PRT é **difuso** de baixa frequência (SH9): não faz sombras nítidas do sol (use `RtSunVisibility`/CSM), e a visibilidade é binária dentro de `maxDistance`.
 - A reconstrução do BVH é de um bloco só (sem BVH de duas camadas): para muitos objetos móveis use `Refit` por malha ou um TLAS na engine.
 - O BVH ainda não é paralelo (as threads são da engine; o LBVH foi escolhido por ser paralelizável).
-- `SurfaceBakeCache` armazena valores escalares por amostra, não mapas de textura; resolução, UVs e fallback para objetos dinâmicos são responsabilidade do host.
-- `Memoryartner` apenas agenda lotes com callback externo; não há execução híbrida real DXR/Vulkan neste repositório, e o scheduler não garante ganho de desempenho.
-- A geração automática de reflection maps a partir do mapa atual foi deixada de fora: não há captura de cena, render targets nem pipeline de assets para gerar, salvar e recarregar esses mapas. O host pode fornecer cubemap/SSR por callback, mas isso não equivale a capturar o mapa atual.

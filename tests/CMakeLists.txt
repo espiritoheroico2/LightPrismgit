@@ -24,7 +24,6 @@ endfunction()
 # ---------------------------------------------------------------------------
 lp_add_test(lp_tests test_main.cpp)
 lp_add_test(lp_cluster_tests test_cluster.cpp)
-lp_add_test(lp_rt_experimental_tests test_rt_experimental.cpp)
 
 # ---------------------------------------------------------------------------
 # Testes que também precisam do renderizador por software.

@@ -23,7 +23,7 @@ struct MemoryQuery {
 
 struct MemoryEstimate {
     uint64_t lightBuffers = 0;   // pontos + spots + cbuffers
-    uint64_t clusters = 0;       // counts + grid + índices + somas + ClusterLight + candidatos por fatia
+    uint64_t clusters = 0;       // counts + grid + índices + somas + ClusterLight
     uint64_t shadowMaps = 0;
     uint64_t ibl = 0;            // cubemap pré-filtrado + LUT (SH é cbuffer, ~160 B)
     uint64_t ssao = 0;           // AO bruto + final (R8)
@@ -49,10 +49,8 @@ inline MemoryEstimate EstimateMemory(const MemoryQuery& q) {
     const ClusterGridGPU g = MakeClusterGrid(d);
     const uint64_t clusters = ClusterCount(g);
     const uint64_t groups = (clusters + kClusterScanGroupSize - 1) / kClusterScanGroupSize;
-    const uint64_t maxClusterLights = uint64_t(q.maxPointLights) + q.maxSpotLights;
-    const uint64_t sliceStride = maxClusterLights > 0 ? maxClusterLights : 1;
     e.clusters = clusters * 4 + groups * 4 + clusters * sizeof(ClusterCell) + clusters * s.indicesPerCluster * 4 +
-                 maxClusterLights * sizeof(ClusterLightGPU) + uint64_t(g.gridZ) * 4 + uint64_t(g.gridZ) * sliceStride * 4;
+                 uint64_t(q.maxPointLights + q.maxSpotLights) * sizeof(ClusterLightGPU);
 
     if (q.hasSun && s.csmCascades > 0)
         e.shadowMaps = uint64_t(s.csmCascades) * s.shadowMapResolution * s.shadowMapResolution * (s.shadowDepth16 ? 2 : 4);
@@ -61,7 +59,7 @@ inline MemoryEstimate EstimateMemory(const MemoryQuery& q) {
         e.ibl = EstimateCubemapChainBytes(s.iblCubeSize, q.iblMips, s.packedIbl ? 4 : 12) +
                 uint64_t(q.lutSize) * q.lutSize * (s.packedIbl ? 2 : 8);
     }
-    if (s.ssao || s.hbao) {
+    if (s.ssao) {
         const uint64_t px = uint64_t(q.width) * q.height;
         e.ssao = (s.ssaoHalfRes ? px / 4 : px) * 2;   // 2 alvos R8
     }

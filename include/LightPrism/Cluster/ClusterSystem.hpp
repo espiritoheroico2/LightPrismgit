@@ -1,5 +1,5 @@
 #pragma once
-// Orquestra o clustered culling da Fase 2: cria buffers/pipelines pelo RHI, dispara os 6 passes de compute
+// Orquestra o clustered culling da Fase 2: cria buffers/pipelines pelo RHI, dispara os 5 passes de compute
 // com barreiras e expõe LightGrid/LightIndexList/Grid para o passe de iluminação da engine.
 // Sem compute (ou se algum shader falhar ao compilar), cai no culling por CPU e sobe os mesmos buffers.
 //
@@ -83,7 +83,7 @@ public:
     const std::string& LastError() const;       // vazio se nada falhou
     const std::string& FallbackReason() const;  // por que caiu no CPU (vazio se não caiu)
 
-    // Memória (bytes) dos buffers de cluster alocados no momento, incluindo os candidatos por fatia.
+    // Memória (bytes) dos buffers de cluster alocados no momento (counts + grid + índices + somas).
     uint64_t AllocatedBytes() const;
     const ClusterGridGPU& Grid() const;         // valores atuais (já com numPoint/numSpot do último frame)
 

@@ -44,9 +44,8 @@ struct ProbeStats { uint64_t raysCast = 0; uint32_t updatedLast = 0; };
 
 class ProbeGrid {
 public:
-    // Returns false for invalid dimensions or physical parameters; a failed init leaves the current grid unchanged.
-    bool Init(const ProbeGridDesc& d);
-    uint32_t Count() const { return static_cast<uint32_t>(probes_.size()); }
+    void Init(const ProbeGridDesc& d);
+    uint32_t Count() const { return d_.nx * d_.ny * d_.nz; }
     const ProbeGridDesc& Desc() const { return d_; }
     Vec3 Position(uint32_t i) const { return d_.origin + Vec3{float(i % d_.nx), float((i / d_.nx) % d_.ny), float(i / (d_.nx * d_.ny))} * d_.spacing; }
 

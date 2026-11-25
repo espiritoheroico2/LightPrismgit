@@ -1,6 +1,8 @@
 #include "LightPrism/Backends/DiligentDevice.hpp"
 
 #include <cstring>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <utility>
 
@@ -32,9 +34,7 @@ public:
     const BufferDesc& Desc() const override { return m_desc; }
 
     bool Update(const void* data, uint64_t size, uint64_t offset) override {
-        if (!m_buffer || m_desc.kind == BufferKind::Readback || offset > m_desc.sizeBytes ||
-            size > m_desc.sizeBytes - offset || (size > 0 && !data))
-            return false;
+        if (!m_buffer || m_desc.kind == BufferKind::Readback || offset + size > m_desc.sizeBytes) return false;
         if (size == 0) return true;
         m_context->UpdateBuffer(m_buffer.RawPtr(), offset, size, data, DG::RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
         return true;
@@ -42,9 +42,7 @@ public:
 
     // Não bloqueia: se a GPU ainda não terminou a cópia, retorna false e o chamador tenta no frame seguinte.
     bool ReadBack(void* dst, uint64_t size, uint64_t offset) override {
-        if (!m_buffer || m_desc.kind != BufferKind::Readback || offset > m_desc.sizeBytes ||
-            size > m_desc.sizeBytes - offset || (size > 0 && !dst))
-            return false;
+        if (!m_buffer || m_desc.kind != BufferKind::Readback || offset + size > m_desc.sizeBytes) return false;
         if (size == 0) return true;
         DG::PVoid mapped = nullptr;
         m_context->MapBuffer(m_buffer.RawPtr(), DG::MAP_READ, DG::MAP_FLAG_DO_NOT_WAIT, mapped);
@@ -218,11 +216,35 @@ public:
         m_device->GetEngineFactory()->CreateDefaultShaderSourceStreamFactory(search.c_str(), &factory);
         if (!factory) return nullptr;
 
+        // OpenGL: usa o GLSL 430 gerado offline (tools/shaders/build_glsl.py -> <root>/glsl/<arquivo>.<entry>.430.glsl).
+        // Assim o OpenGL nao depende do tradutor HLSL->GLSL do Diligent, que nao aceita estes compute.
+        const DG::RENDER_DEVICE_TYPE devType = m_device->GetDeviceInfo().Type;
+        const bool useGlsl = devType == DG::RENDER_DEVICE_TYPE_GL || devType == DG::RENDER_DEVICE_TYPE_GLES;
+        std::string glslText;
+        if (useGlsl) {
+            std::string stem = d.shaderFile;
+            const size_t slash = stem.find_last_of("/\\");
+            if (slash != std::string::npos) stem = stem.substr(slash + 1);
+            const std::string suffix = ".compute.hlsl";
+            if (stem.size() > suffix.size()) stem = stem.substr(0, stem.size() - suffix.size());
+            const std::string path = root + "/glsl/" + stem + "." + (d.entryPoint ? d.entryPoint : "CSMain") + ".430.glsl";
+            std::ifstream in(path, std::ios::binary);
+            if (!in) return nullptr;
+            glslText.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        }
+
         DG::ShaderCreateInfo sci;
-        sci.SourceLanguage = DG::SHADER_SOURCE_LANGUAGE_HLSL;
+        if (useGlsl) {
+            sci.SourceLanguage = DG::SHADER_SOURCE_LANGUAGE_GLSL_VERBATIM;
+            sci.Source = glslText.c_str();
+            sci.SourceLength = glslText.size();
+            sci.EntryPoint = "main";
+        } else {
+            sci.SourceLanguage = DG::SHADER_SOURCE_LANGUAGE_HLSL;
+            sci.FilePath = d.shaderFile;
+            sci.EntryPoint = d.entryPoint ? d.entryPoint : "CSMain";
+        }
         sci.pShaderSourceStreamFactory = factory;
-        sci.FilePath = d.shaderFile;
-        sci.EntryPoint = d.entryPoint ? d.entryPoint : "CSMain";
         sci.Desc.ShaderType = DG::SHADER_TYPE_COMPUTE;
         sci.Desc.Name = d.debugName;
         sci.Desc.UseCombinedTextureSamplers = false;

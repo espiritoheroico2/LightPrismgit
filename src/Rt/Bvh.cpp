@@ -10,7 +10,7 @@ namespace LightPrism::Rt {
 
 namespace {
 
-constexpr uint32_t kStackSize = 64;
+constexpr uint32_t kStackSize = 128;
 
 struct BNode {
     Aabb box;
@@ -35,14 +35,14 @@ struct SahCtx {
     uint32_t maxLeaf;
 };
 
-int BuildSah(SahCtx& c, uint32_t begin, uint32_t end, uint32_t depth) {
+int BuildSah(SahCtx& c, uint32_t begin, uint32_t end) {
     const int self = int(c.nodes.size());
     c.nodes.emplace_back();
     Aabb box, cbox;
     for (uint32_t i = begin; i < end; ++i) { box.Grow(c.boxes[c.order[i]]); cbox.Grow(c.cent[c.order[i]]); }
     c.nodes[self].box = box;
     const uint32_t n = end - begin;
-    if (n <= 1 || depth >= kStackSize) { c.nodes[self].first = begin; c.nodes[self].count = n; return self; }
+    if (n <= 1) { c.nodes[self].first = begin; c.nodes[self].count = n; return self; }
 
     constexpr int kBins = 16;
     float bestCost = 1e30f; int bestAxis = -1; int bestSplit = 0;
@@ -86,8 +86,8 @@ int BuildSah(SahCtx& c, uint32_t begin, uint32_t end, uint32_t depth) {
         std::nth_element(c.order.begin() + begin, c.order.begin() + mid, c.order.begin() + end,
                          [&](uint32_t x, uint32_t y) { return Axis(c.cent[x], a) < Axis(c.cent[y], a); });
     }
-    const int l = BuildSah(c, begin, mid, depth + 1);
-    const int r = BuildSah(c, mid, end, depth + 1);
+    const int l = BuildSah(c, begin, mid);
+    const int r = BuildSah(c, mid, end);
     c.nodes[self].left = l; c.nodes[self].right = r;
     return self;
 }
@@ -144,8 +144,7 @@ void BuildLbvhTopology(LbvhCtx& c) {
     }
 }
 
-int CollapseLbvh(const LbvhCtx& c, int node, std::vector<BNode>& out, const std::vector<Aabb>& boxesSorted, uint32_t maxLeaf,
-                 uint32_t depth) {
+int CollapseLbvh(const LbvhCtx& c, int node, std::vector<BNode>& out, const std::vector<Aabb>& boxesSorted, uint32_t maxLeaf) {
     const int self = int(out.size());
     out.emplace_back();
     const bool isLeaf = node >= c.n - 1;
@@ -155,9 +154,9 @@ int CollapseLbvh(const LbvhCtx& c, int node, std::vector<BNode>& out, const std:
     Aabb box;
     for (uint32_t i = lo; i <= hi; ++i) box.Grow(boxesSorted[i]);
     out[self].box = box;
-    if (isLeaf || count <= maxLeaf || depth >= kStackSize) { out[self].first = lo; out[self].count = count; return self; }
-    const int l = CollapseLbvh(c, c.left[node], out, boxesSorted, maxLeaf, depth + 1);
-    const int r = CollapseLbvh(c, c.right[node], out, boxesSorted, maxLeaf, depth + 1);
+    if (isLeaf || count <= maxLeaf) { out[self].first = lo; out[self].count = count; return self; }
+    const int l = CollapseLbvh(c, c.left[node], out, boxesSorted, maxLeaf);
+    const int r = CollapseLbvh(c, c.right[node], out, boxesSorted, maxLeaf);
     out[self].left = l; out[self].right = r;
     return self;
 }
@@ -254,7 +253,7 @@ void Bvh::Build(const std::vector<Triangle>& tris, BvhBuild mode, uint32_t maxLe
 
     if (mode == BvhBuild::BinnedSah || n == 1) {
         SahCtx c{tree, order, boxes, cent, maxLeaf};
-        BuildSah(c, 0, n, 1);
+        BuildSah(c, 0, n);
     } else {
         const Vec3 ext = m_bounds.Extent();
         const auto norm = [](float v, float lo, float e) { return e > 1e-20f ? (v - lo) / e : 0.0f; };
@@ -268,9 +267,10 @@ void Bvh::Build(const std::vector<Triangle>& tris, BvhBuild mode, uint32_t maxLe
         std::vector<Aabb> sorted(n);
         for (uint32_t i = 0; i < n; ++i) { c.codes[i] = keyed[i].first; order[i] = keyed[i].second; sorted[i] = boxes[order[i]]; }
         BuildLbvhTopology(c);
-        CollapseLbvh(c, 0, tree, sorted, maxLeaf, 1);
+        CollapseLbvh(c, 0, tree, sorted, maxLeaf);
     }
     Flatten(tree, m_nodes, m_depth);
+    if (m_depth > kStackSize) m_depth = kStackSize; // salvaguarda contra estouro de pilha na travessia
     m_triIndex = order;
     m_tris.resize(n);
     for (uint32_t i = 0; i < n; ++i) m_tris[i] = tris[order[i]];

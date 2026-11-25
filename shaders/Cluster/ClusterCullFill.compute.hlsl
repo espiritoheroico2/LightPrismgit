@@ -1,4 +1,4 @@
-// Passe 6: reexecuta o teste (mesma ordem e mesmo teto do passe de contagem) e grava os índices
+// Passe 4: reexecuta o teste (mesma ordem e mesmo teto do passe de contagem) e grava os índices
 // no offset final = offsetLocal + GroupSums[cluster / 256]. Escreve também a célula (offset, count).
 // Writes além de maxIndices são descartados (overflow reportado por Stats[0] > maxIndices).
 // Dispatch: ceil(clusterCount / 64) x 1 x 1.
@@ -6,9 +6,7 @@
 
 cbuffer ClusterGridCB : register(b0) { ClusterGrid Grid; };
 
-StructuredBuffer<uint>            SliceLightCounts  : register(t0);
-StructuredBuffer<uint>            SliceLightIndices : register(t1);
-StructuredBuffer<ClusterLight>    Lights            : register(t2);
+StructuredBuffer<ClusterLight> Lights : register(t0);
 
 RWStructuredBuffer<uint>        LightIndexList : register(u0);
 RWStructuredBuffer<ClusterCell> LightGrid      : register(u1);
@@ -24,12 +22,10 @@ void CSMain(uint3 id : SV_DispatchThreadID) {
 
     uint3 c = ClusterCoordsOf(Grid, i);
     ClusterAABB aabb = BuildClusterAABB(Grid, c);
-    uint stride = max(Grid.numPointLights + Grid.numSpotLights, 1u);
-    uint candidates = SliceLightCounts[c.z];
+    uint total = Grid.numPointLights + Grid.numSpotLights;
 
     uint count = 0;
-    for (uint candidate = 0; candidate < candidates && count < Grid.maxLightsPerCluster; ++candidate) {
-        uint li = SliceLightIndices[c.z * stride + candidate];
+    for (uint li = 0; li < total && count < Grid.maxLightsPerCluster; ++li) {
         ClusterLight L = Lights[li];
         if (!ClusterInLightRange(L, c)) continue;
         if (LightIntersectsAABB(L, aabb)) {
